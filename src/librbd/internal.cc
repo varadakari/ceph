@@ -2827,6 +2827,8 @@ reprotect_and_return_err:
       }
     }
 
+    ictx->work_queue->drain();
+
     ictx->cancel_async_requests();
     ictx->readahead.wait_for_pending();
     if (ictx->object_cacher) {
@@ -2834,6 +2836,8 @@ reprotect_and_return_err:
     } else {
       flush(ictx);
     }
+
+    ictx->work_queue->drain();
 
     if (ictx->copyup_finisher != NULL) {
       ictx->copyup_finisher->wait_for_empty();
