@@ -177,7 +177,8 @@ namespace librbd {
 
     bool copyup = false;
     {
-      RWLock::RLocker l(m_ictx->owner_lock);
+      RWLock::RLocker owner_locker(m_ictx->owner_lock);
+      RWLock::RLocker snap_locker(m_ictx->snap_lock);
       if (!m_ictx->object_map.enabled()) {
 	copyup = true;
       } else if (!m_ictx->image_watcher->is_lock_owner()) {
