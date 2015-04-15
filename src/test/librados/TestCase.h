@@ -6,6 +6,7 @@
 
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
+
 #include "gtest/gtest.h"
 
 #include <string>
