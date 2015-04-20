@@ -865,7 +865,8 @@ int ObjectStoreTool::get_object(ObjectStore *store, coll_t coll,
       done = true;
       break;
     default:
-      return EFAULT;
+      std::cerr << "Unknown section type " << type << std::endl;
+      return -EFAULT;
     }
   }
   store->apply_transaction(*t);
@@ -966,7 +967,7 @@ int ObjectStoreTool::do_import(ObjectStore *store, OSDSuperblock& sb)
 
   if (sh.magic != super_header::super_magic) {
     cerr << "Invalid magic number" << std::endl;
-    return EFAULT;
+    return -EFAULT;
   }
 
   if (sh.version > super_header::super_ver) {
@@ -980,7 +981,8 @@ int ObjectStoreTool::do_import(ObjectStore *store, OSDSuperblock& sb)
   if (ret)
     return ret;
   if (type != TYPE_PG_BEGIN) {
-    return EFAULT;
+    cerr << "Invalid first section type " << type << std::endl;
+    return -EFAULT;
   }
 
   bufferlist::iterator ebliter = ebl.begin();
@@ -1084,13 +1086,14 @@ int ObjectStoreTool::do_import(ObjectStore *store, OSDSuperblock& sb)
       done = true;
       break;
     default:
-      return EFAULT;
+      std::cerr << "Unknown section type " << type << std::endl;
+      return -EFAULT;
     }
   }
 
   if (!found_metadata) {
     cerr << "Missing metadata section" << std::endl;
-    return EFAULT;
+    return -EFAULT;
   }
 
   pg_log_t newlog, reject;
@@ -2003,9 +2006,9 @@ int main(int argc, char **argv)
     }
     catch (const buffer::error &e) {
       cerr << "do_import threw exception error " << e.what() << std::endl;
-      ret = EFAULT;
+      ret = -EFAULT;
     }
-    if (ret == EFAULT) {
+    if (ret == -EFAULT) {
       cerr << "Corrupt input for import" << std::endl;
     }
     if (ret == 0)
