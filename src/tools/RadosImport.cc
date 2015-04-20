@@ -17,6 +17,8 @@
 
 #include "RadosImport.h"
 
+#define dout_subsys ceph_subsys_rados
+
 int RadosImport::import(std::string pool)
 {
   bufferlist ebl;
@@ -30,12 +32,12 @@ int RadosImport::import(std::string pool)
     cerr << "Invalid magic number: 0x"
       << std::hex << sh.magic << " vs. 0x" << super_header::super_magic
       << std::dec << std::endl;
-    return EFAULT;
+    return -EFAULT;
   }
 
   if (sh.version > super_header::super_ver) {
     cerr << "Can't handle export format version=" << sh.version << std::endl;
-    return EINVAL;
+    return -EINVAL;
   }
 
   //First section must be TYPE_PG_BEGIN
@@ -43,18 +45,24 @@ int RadosImport::import(std::string pool)
   ret = read_section(&type, &ebl);
   if (ret)
     return ret;
-  if (type != TYPE_PG_BEGIN) {
-    return EFAULT;
-  }
 
-  bufferlist::iterator ebliter = ebl.begin();
-  pg_begin pgb;
-  pgb.decode(ebliter);
-  spg_t pgid = pgb.pgid;
-
-  if (!pgid.is_no_shard()) {
-    cerr << "Importing Erasure Coded shard is not supported" << std::endl;
-    exit(1);
+  bool pool_mode = false;
+  if (type == TYPE_POOL_BEGIN) {
+    pool_mode = true;
+    cout << "Importing pool" << std::endl;
+  } else if (type == TYPE_PG_BEGIN) {
+    bufferlist::iterator ebliter = ebl.begin();
+    pg_begin pgb;
+    pgb.decode(ebliter);
+    spg_t pgid = pgb.pgid;;
+    if (!pgid.is_no_shard()) {
+      cerr << "Importing Erasure Coded shard is not supported" << std::endl;
+      exit(1);
+    }
+    cout << "Importing from pgid " << pgid << std::endl;
+  } else {
+    cerr << "Invalid initial section code " << type << std::endl;
+    return -EFAULT;
   }
 
   // XXX: How to check export features?
@@ -94,11 +102,8 @@ int RadosImport::import(std::string pool)
     return ret;
   }
 
-  cout << "Importing from pgid " << pgid << std::endl;
-
   bool done = false;
   bool found_metadata = false;
-  metadata_section ms;
   while(!done) {
     ret = read_section(&type, &ebl);
     if (ret)
@@ -112,7 +117,10 @@ int RadosImport::import(std::string pool)
     switch(type) {
     case TYPE_OBJECT_BEGIN:
       ret = get_object_rados(ioctx, ebl);
-      if (ret) return ret;
+      if (ret) {
+        cerr << "Error inserting object: " << ret << std::endl;
+        return ret;
+      }
       break;
     case TYPE_PG_METADATA:
       if (debug)
@@ -122,13 +130,16 @@ int RadosImport::import(std::string pool)
     case TYPE_PG_END:
       done = true;
       break;
+    case TYPE_POOL_END:
+      done = true;
+      break;
     default:
-      return EFAULT;
+      return -EFAULT;
     }
   }
 
-  if (!found_metadata) {
-    cerr << "Missing metadata section, ignored" << std::endl;
+  if (!(pool_mode || found_metadata)) {
+    cerr << "Missing metadata section!" << std::endl;
   }
 
   return 0;
@@ -202,8 +213,10 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
   while(!done) {
     sectiontype_t type;
     int ret = read_section(&type, &ebl);
-    if (ret)
+    if (ret) {
+      cerr << "Error reading section: " << ret << std::endl;
       return ret;
+    }
 
     ebliter = ebl.begin();
     //cout << "\tdo_object: Section type " << hex << type << dec << std::endl;
@@ -220,7 +233,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
       if (need_align) {
         if (ds.offset != in_offset) {
           cerr << "Discontiguous object data in export" << std::endl;
-          return EFAULT;
+          return -EFAULT;
         }
         assert(ds.databl.length() == ds.len);
         databl.claim_append(ds.databl);
@@ -297,14 +310,15 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
         if (debug) cerr << "END write offset=" << out_offset << " len=" << databl.length() << std::endl;
         ret = ioctx.write(ob.hoid.hobj.oid.name, databl, databl.length(), out_offset);
         if (ret) {
-           cerr << "write failed: " << cpp_strerror(ret) << std::endl;
+          cerr << "write failed: " << cpp_strerror(ret) << std::endl;
           return ret;
         }
       }
       done = true;
       break;
     default:
-      return EFAULT;
+      cerr << "Unexpected section type " << type << std::endl;
+      return -EFAULT;
     }
   }
   return 0;
