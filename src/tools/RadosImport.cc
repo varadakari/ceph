@@ -123,8 +123,7 @@ int RadosImport::import(std::string pool)
       }
       break;
     case TYPE_PG_METADATA:
-      if (debug)
-        cout << "Don't care about the old metadata" << std::endl;
+      dout(10) << "Don't care about the old metadata" << dendl;
       found_metadata = true;
       break;
     case TYPE_PG_END:
@@ -204,8 +203,9 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
       alignment = ioctx.pool_required_alignment();
   }
 
-  if (debug && need_align)
-    cerr << "alignment = " << alignment << std::endl;
+  if (need_align) {
+    dout(10) << "alignment = " << alignment << dendl;
+  }
 
   bufferlist ebl, databl;
   uint64_t in_offset = 0, out_offset = 0;
@@ -228,8 +228,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
     switch(type) {
     case TYPE_DATA:
       ds.decode(ebliter);
-      if (debug)
-        cerr << "\tdata: offset " << ds.offset << " len " << ds.len << std::endl;
+      dout(10) << "\tdata: offset " << ds.offset << " len " << ds.len << dendl;
       if (need_align) {
         if (ds.offset != in_offset) {
           cerr << "Discontiguous object data in export" << std::endl;
@@ -240,7 +239,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
         in_offset += ds.len;
         if (databl.length() >= alignment) {
           uint64_t rndlen = uint64_t(databl.length() / alignment) * alignment;
-          if (debug) cerr << "write offset=" << out_offset << " len=" << rndlen << std::endl;
+          dout(10) << "write offset=" << out_offset << " len=" << rndlen << dendl;
           ret = ioctx.write(ob.hoid.hobj.oid.name, databl, rndlen, out_offset);
           if (ret) {
             cerr << "write failed: " << cpp_strerror(ret) << std::endl;
@@ -265,8 +264,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
     case TYPE_ATTRS:
       as.decode(ebliter);
 
-      if (debug)
-        cerr << "\tattrs: len " << as.data.size() << std::endl;
+      dout(10) << "\tattrs: len " << as.data.size() << dendl;
       for (std::map<string,bufferlist>::iterator i = as.data.begin();
           i != as.data.end(); ++i) {
         if (i->first == "_" || i->first == "snapset")
@@ -282,9 +280,8 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
     case TYPE_OMAP_HDR:
       oh.decode(ebliter);
 
-      if (debug)
-        cerr << "\tomap header: " << string(oh.hdr.c_str(), oh.hdr.length())
-          << std::endl;
+      dout(10) << "\tomap header: " << string(oh.hdr.c_str(), oh.hdr.length())
+        << dendl;
       ret = ioctx.omap_set_header(ob.hoid.hobj.oid.name, oh.hdr);
       if (ret) {
         cerr << "omap_set_header failed: " << cpp_strerror(ret) << std::endl;
@@ -295,8 +292,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
     case TYPE_OMAP:
       os.decode(ebliter);
 
-      if (debug)
-        cerr << "\tomap: size " << os.omap.size() << std::endl;
+      dout(10) << "\tomap: size " << os.omap.size() << dendl;
       ret = ioctx.omap_set(ob.hoid.hobj.oid.name, os.omap);
       if (ret) {
         cerr << "omap_set failed: " << cpp_strerror(ret) << std::endl;
@@ -307,7 +303,7 @@ int RadosImport::get_object_rados(librados::IoCtx &ioctx, bufferlist &bl)
     case TYPE_OBJECT_END:
       if (need_align && databl.length() > 0) {
         assert(databl.length() < alignment);
-        if (debug) cerr << "END write offset=" << out_offset << " len=" << databl.length() << std::endl;
+        dout(10) << "END write offset=" << out_offset << " len=" << databl.length() << dendl;
         ret = ioctx.write(ob.hoid.hobj.oid.name, databl, databl.length(), out_offset);
         if (ret) {
           cerr << "write failed: " << cpp_strerror(ret) << std::endl;
