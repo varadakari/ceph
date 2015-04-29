@@ -58,4 +58,5 @@ noinst_HEADERS += \
 	tools/RadosDump.h \
 	tools/RadosImport.h\ 
 	tools/ceph_objectstore_tool.h \
-	tools/rados/PoolDump.h
+	tools/rados/PoolDump.h \
+	tools/cephfs/DataScan.h
