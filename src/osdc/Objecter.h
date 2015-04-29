@@ -1324,6 +1324,11 @@ public:
     // ...total m workers.  Or m=0 if not using multiple workers.
     uint32_t worker_m;
 
+    // Lowest PG we will touch (inclusive)
+    uint32_t pg_min;
+    // Highest PG we will touch (inclusive)
+    uint32_t pg_max;
+
     uint64_t object_hash_low;
     // Drop objects greater than hash_high (not equal to)
     // In HashIndex nibble encoding
@@ -1374,6 +1379,8 @@ public:
     bool is_sharded() const {
       return worker_m > 0;
     }
+
+    float get_progress() const;
   };
 
   struct C_NList : public Context {
@@ -2466,6 +2473,12 @@ public:
 
   void list_nobjects(NListContext *p, Context *onfinish);
   uint32_t list_nobjects_seek(NListContext *p, uint32_t pos);
+  /**
+   * Approximate position in assigned object hash range,
+   * as a real number 0.0<=n<=1.0
+   */
+  float list_nobjects_progress(NListContext *list_context) const;
+
   void list_objects(ListContext *p, Context *onfinish);
   uint32_t list_objects_seek(ListContext *p, uint32_t pos);
 

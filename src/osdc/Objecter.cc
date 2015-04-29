@@ -3138,28 +3138,28 @@ void Objecter::list_nobjects(NListContext *list_context, Context *onfinish)
   if (list_context->starting_pg_num == 0) {     // there can't be zero pgs!
     list_context->starting_pg_num = pg_num;
     ldout(cct, 20) << pg_num << " placement groups" << dendl;
-  }
 
-  // Range of PGs to list over (inclusive)
-  uint32_t pg_min = 0;
-  uint32_t pg_max = list_context->starting_pg_num - 1;  // (inclusive)
-  if (list_context->is_sharded()) {
-    // Work out PG range addressed by this worker
-    // (divide hash space into pg_num*worker_m chunks, and assign pg_num
-    // of them to each worker)
-    pg_min = (list_context->worker_n * pg_num) / list_context->worker_m;
-    if (list_context->worker_n == list_context->worker_m - 1) {
-      // Extend PG max to encompass any remainder
-      pg_max = list_context->starting_pg_num - 1;
-    } else {
-      pg_max = (list_context->worker_n * pg_num + pg_num - 1) / list_context->worker_m;
-    }
+    // Calculate range of PGs to list over
+    if (list_context->is_sharded()) {
+      // Work out PG range addressed by this worker
+      // (divide hash space into pg_num*worker_m chunks, and assign pg_num
+      // of them to each worker)
+      list_context->pg_min = (list_context->worker_n * pg_num) / list_context->worker_m;
+      if (list_context->worker_n == list_context->worker_m - 1) {
+        // Extend PG max to encompass any remainder
+        list_context->pg_max = list_context->starting_pg_num - 1;
+      } else {
+        list_context->pg_max = (list_context->worker_n * pg_num + pg_num - 1) / list_context->worker_m;
+      }
 
-    // Initialize current_pg, object_hash_low, object_hash_high
-    if (list_context->object_hash_high == 0x0) {
-      // Initial call
-      list_context->current_pg = pg_min;
+      // Initialize current_pg, object_hash_low, object_hash_high
+      list_context->current_pg = list_context->pg_min;
       _nlist_recalc_limits(list_context);
+    } else {
+      list_context->pg_min = 0;
+      list_context->pg_max = list_context->starting_pg_num - 1;  // (inclusive)
+      list_context->object_hash_low = 0x0;
+      list_context->object_hash_high = 0xffffffff;
     }
   }
 
@@ -3171,7 +3171,7 @@ void Objecter::list_nobjects(NListContext *list_context, Context *onfinish)
     list_context->cookie = collection_list_handle_t();
     
     // Always list from upper
-    if (list_context->current_pg > pg_max) {
+    if (list_context->current_pg > list_context->pg_max) {
       list_context->at_end_of_pool = true;
       ldout(cct, 20) << " no more pgs; reached end of pool" << dendl;
     } else {
@@ -3193,7 +3193,7 @@ void Objecter::list_nobjects(NListContext *list_context, Context *onfinish)
   if (list_context->starting_pg_num != pg_num) {
     // start reading from the beginning; the pgs have changed
     ldout(cct, 10) << " pg_num changed; restarting with " << pg_num << dendl;
-    list_context->current_pg = pg_min;
+    list_context->current_pg = list_context->pg_min;
     list_context->cookie = collection_list_handle_t();
     list_context->current_pg_epoch = 0;
     list_context->starting_pg_num = pg_num;
@@ -3257,7 +3257,6 @@ void Objecter::_nlist_recalc_limits(NListContext *list_context)
   }
   ldout(cct, 10) << "This worker chunk range " << first_chunk << "-" << last_chunk << dendl;
 
-
   // Calculate the bits for the upper hash limit, which will be substituted
   // into the zeros in pg_num_mask for object_hash_high
   uint32_t hash_high_counter;
@@ -3270,15 +3269,17 @@ void Objecter::_nlist_recalc_limits(NListContext *list_context)
   uint32_t pg_high_bits = local_hash_to_osd_hash(list_context->current_pg);
   if (last_chunk >= this_pg_last_chunk) {
     hash_high_counter = hash_range_size; // Top of the PG
-    /* Handle case where PG number is not a power of two: extend the upper
-     * limit to catch the guys who are assigned to this PG by ceph_stable_mod
-     * in the case where x & bmask >= b
-     *
-     * This will result in an uneven allocation of hash ranges between workers
-     * when a cluster has a non-power-of-two number of PGs, but it's the best
-     * we can do when assigning ranges.
-     */
-    pg_high_bits = local_hash_to_osd_hash(list_context->current_pg | 1 << (pgnm_bits - 1));
+    if (pg_num & (pg_num - 1)) {
+      /* Handle case where PG number is not a power of two: extend the upper
+       * limit to catch the guys who are assigned to this PG by ceph_stable_mod
+       * in the case where x & bmask >= b
+       *
+       * This will result in an uneven allocation of hash ranges between workers
+       * when a cluster has a non-power-of-two number of PGs, but it's the best
+       * we can do when assigning ranges.
+       */
+      pg_high_bits = local_hash_to_osd_hash(list_context->current_pg | 1 << (pgnm_bits - 1));
+    }
   } else {
     hash_high_counter = (last_chunk - this_pg_base_chunk + 1) * hash_split_size - 1;
   }
@@ -4740,5 +4741,38 @@ void Objecter::set_epoch_barrier(epoch_t epoch)
     epoch_barrier = epoch;
     _maybe_request_map();
   }
+}
+
+float Objecter::NListContext::get_progress() const
+{
+  const uint32_t pgs = (pg_max - pg_min + 1);
+
+  float progress = float(current_pg - pg_min) / pgs;
+
+  // Now take the object hash of my next cookie
+  // My progress within the PG counts for one PG's worth of progress
+  if (cookie != collection_list_handle_t()) {
+    if (cookie.is_max()) {
+      progress += 1.0 / pgs;
+    } else if (!cookie.is_min()) {
+      uint32_t hash_pos = local_hash_to_osd_hash(cookie.get_hash());
+      // Note that this will not be a smooth distribution because only
+      // the bits outside the pg_num_mask vary.  We could swizzle the bits
+      // around to make it smoother (i.e. the reverse of how the object_hash
+      // limits are calculated originally).  However, it is monotonic, which
+      // is the main desirable characteristic from a progress indicator.
+      progress += (
+          (
+           hash_pos
+           -
+           object_hash_low
+          )
+          /
+          float(object_hash_high - object_hash_low)
+        ) / pgs;
+    }
+  }
+
+  return progress;
 }
 
