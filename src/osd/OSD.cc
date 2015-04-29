@@ -2467,7 +2467,7 @@ void OSD::recursive_remove_collection(ObjectStore *store, spg_t pgid, coll_t tmp
   SnapMapper mapper(&driver, 0, 0, 0, pgid.shard);
 
   vector<ghobject_t> objects;
-  store->collection_list_impl(tmp, ghobject_t(), ghobject_t::get_max(), INT_MAX, 0, &objects, 0);
+  store->collection_list(tmp, ghobject_t(), ghobject_t::get_max(), INT_MAX, 0, &objects, 0);
 
   // delete them.
   unsigned removed = 0;
@@ -4079,7 +4079,7 @@ bool remove_dir(
   ghobject_t next;
   while (!next.is_max()) {
     handle.reset_tp_timeout();
-    store->collection_list_impl(
+    store->collection_list(
       coll,
       next,
       ghobject_t::get_max(),
