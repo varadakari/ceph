@@ -862,7 +862,6 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)
 	  current,
 	  list_size,
 	  list_size,
-	  snapid,
 	  &sentries,
 	  &next);
 	if (r != 0) {
@@ -1020,7 +1019,6 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)
 	  current,
 	  list_size,
 	  list_size,
-	  snapid,
 	  &sentries,
 	  &next);
 	if (r != 0) {
@@ -11603,7 +11601,7 @@ void ReplicatedPG::scan_range(
 
   vector<hobject_t> ls;
   ls.reserve(max);
-  int r = pgbackend->objects_list_partial(bi->begin, min, max, 0, &ls, &bi->end);
+  int r = pgbackend->objects_list_partial(bi->begin, min, max, &ls, &bi->end);
   assert(r >= 0);
   dout(10) << " got " << ls.size() << " items, next " << bi->end << dendl;
   dout(20) << ls << dendl;
@@ -12130,7 +12128,6 @@ bool ReplicatedPG::agent_work(int start_max)
   vector<hobject_t> ls;
   hobject_t next;
   int r = pgbackend->objects_list_partial(agent_state->position, ls_min, ls_max,
-					  0 /* no filtering by snapid */,
 					  &ls, &next);
   assert(r >= 0);
   dout(20) << __func__ << " got " << ls.size() << " objects" << dendl;
