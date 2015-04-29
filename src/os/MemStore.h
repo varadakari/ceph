@@ -298,12 +298,9 @@ public:
   int list_collections(vector<coll_t>& ls);
   bool collection_exists(coll_t c);
   bool collection_empty(coll_t c);
-  int collection_list(coll_t cid, vector<ghobject_t>& o);
-  int collection_list_partial(coll_t cid, ghobject_t start,
-			      int min, int max, snapid_t snap, 
+  int collection_list_impl(coll_t cid, ghobject_t start, ghobject_t end,
+			      int max, snapid_t snap, 
 			      vector<ghobject_t> *ls, ghobject_t *next);
-  int collection_list_range(coll_t cid, ghobject_t start, ghobject_t end,
-			    snapid_t seq, vector<ghobject_t> *ls);
 
   int omap_get(
     coll_t cid,                ///< [in] Collection containing oid
