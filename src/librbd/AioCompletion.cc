@@ -86,7 +86,9 @@ namespace librbd {
     async_op.finish_op();
 
     if (complete_cb) {
+      lock.Unlock();
       complete_cb(rbd_comp, complete_arg);
+      lock.Lock();
     }
     done = true;
     cond.Signal();
