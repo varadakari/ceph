@@ -663,6 +663,8 @@ public:
 
   void ImageCtx::shutdown_cache() {
     flush_async_operations();
+
+    RWLock::RLocker owner_locker(owner_lock);
     invalidate_cache(true);
     object_cacher->stop();
   }
@@ -785,21 +787,15 @@ public:
   }
 
   void ImageCtx::flush_async_operations(Context *on_finish) {
-    bool complete = false;
-    {
-      Mutex::Locker l(async_ops_lock);
-      if (async_ops.empty()) {
-        complete = true;
-      } else {
-        ldout(cct, 20) << "flush async operations: " << on_finish << " "
-                       << "count=" << async_ops.size() << dendl;
-        async_ops.front()->add_flush_context(on_finish);
-      }
+    Mutex::Locker l(async_ops_lock);
+    if (async_ops.empty()) {
+      work_queue->queue(on_finish, 0);
+      return;
     }
 
-    if (complete) {
-      on_finish->complete(0);
-    }
+    ldout(cct, 20) << "flush async operations: " << on_finish << " "
+                   << "count=" << async_ops.size() << dendl;
+    async_ops.front()->add_flush_context(on_finish);
   }
 
   void ImageCtx::cancel_async_requests() {
