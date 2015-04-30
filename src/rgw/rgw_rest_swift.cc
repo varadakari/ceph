@@ -33,8 +33,6 @@ int RGWListBuckets_ObjStore_SWIFT::get_params()
     limit = (uint64_t)l;
   }
 
-  need_stats = (s->format != RGW_FORMAT_PLAIN);
-
   if (need_stats) {
     bool stats, exists;
     int r = s->info.args.get_bool("stats", &stats, &exists);
@@ -80,7 +78,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_begin(bool has_buckets)
   /* Adding account stats in the header to keep align with Swift API */
   dump_account_metadata(s, buckets_count, buckets_objcount, buckets_size, buckets_size_rounded);
   dump_errno(s);
-  end_header(s, NULL, NULL, true);
+  end_header(s, NULL, NULL, NO_CONTENT_LENGTH, true);
 
   if (!ret) {
     dump_start(s);

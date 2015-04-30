@@ -226,10 +226,9 @@ namespace librbd {
     if (object_cacher) {
       uint64_t obj = cache_max_dirty_object;
       if (!obj) {
-        obj = cache_size / (1ull << order);
-        obj = obj * 4 + 10;
+        obj = MIN(2000, MAX(10, cache_size / 100 / sizeof(ObjectCacher::Object)));
       }
-      ldout(cct, 10) << " cache bytes " << cache_size << " order " << (int)order
+      ldout(cct, 10) << " cache bytes " << cache_size
 		     << " -> about " << obj << " objects" << dendl;
       object_cacher->set_max_objects(obj);
     }
@@ -435,6 +434,14 @@ namespace librbd {
     SnapInfo info(in_snap_name, in_size, parent, protection_status, flags);
     snap_info.insert(pair<snap_t, SnapInfo>(id, info));
     snap_ids.insert(pair<string, snap_t>(in_snap_name, id));
+  }
+
+  void ImageCtx::rm_snap(string in_snap_name, snap_t id)
+  {
+    assert(snap_lock.is_wlocked());
+    snaps.erase(std::remove(snaps.begin(), snaps.end(), id), snaps.end());
+    snap_info.erase(id);
+    snap_ids.erase(in_snap_name);
   }
 
   uint64_t ImageCtx::get_image_size(snap_t in_snap_id) const
@@ -843,35 +850,43 @@ namespace librbd {
 
     string start = METADATA_CONF_PREFIX;
     int r = 0, j = 0;
-    bool is_continue;
     md_config_t local_config_t;
-    do {
+
+    bool retrieve_metadata = !old_format;
+    while (retrieve_metadata) {
       map<string, bufferlist> pairs, res;
-      r = cls_client::metadata_list(&md_ctx, header_oid, start, max_conf_items, &pairs);
+      r = cls_client::metadata_list(&md_ctx, header_oid, start, max_conf_items,
+                                    &pairs);
       if (r < 0) {
-        lderr(cct) << __func__ << " couldn't list conf metadatas: " << r << dendl;
+        lderr(cct) << __func__ << " couldn't list conf metadatas: " << r
+                   << dendl;
         break;
       }
-      if (pairs.empty())
+      if (pairs.empty()) {
         break;
-      
-      is_continue = _filter_metadata_confs(METADATA_CONF_PREFIX, configs, pairs, &res);
-      for (map<string, bufferlist>::iterator it = res.begin(); it != res.end(); ++it) {
+      }
+
+      retrieve_metadata = _filter_metadata_confs(METADATA_CONF_PREFIX, configs,
+                                                 pairs, &res);
+      for (map<string, bufferlist>::iterator it = res.begin();
+           it != res.end(); ++it) {
         j = local_config_t.set_val(it->first.c_str(), it->second.c_str());
-        if (j < 0)
-          lderr(cct) << __func__ << " failed to set config " << it->first << " with value "
-                     << it->second.c_str() << ": " << j << dendl;
+        if (j < 0) {
+          lderr(cct) << __func__ << " failed to set config " << it->first
+                     << " with value " << it->second.c_str() << ": " << j
+                     << dendl;
+        }
         break;
       }
       start = pairs.rbegin()->first;
-    } while (is_continue);
+    }
 
-#define ASSIGN_OPTION(config)                                                      \
-    do {                                                                           \
-      if (configs[#config])                                                        \
-        config = local_config_t.rbd_##config;                                      \
-      else                                                                         \
-        config = cct->_conf->rbd_##config;                                         \
+#define ASSIGN_OPTION(config)                                                  \
+    do {                                                                       \
+      if (configs[#config])                                                    \
+        config = local_config_t.rbd_##config;                                  \
+      else                                                                     \
+        config = cct->_conf->rbd_##config;                                     \
     } while (0);
 
     ASSIGN_OPTION(cache);

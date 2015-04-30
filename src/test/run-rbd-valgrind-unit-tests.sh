@@ -6,10 +6,6 @@ CEPH_SRC=$(pwd)
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$CEPH_SRC/.libs"
 PATH="$CEPH_SRC:$PATH"
 
-unittest_librbd
-for i in 0 1 5 13 29
-do
-    RBD_FEATURES=$i unittest_librbd
-done
+RBD_FEATURES=13 valgrind --tool=memcheck --leak-check=full --suppressions=valgrind.supp unittest_librbd
 
 echo OK

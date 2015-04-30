@@ -180,7 +180,7 @@ public:
       }
 
       m_aio_completions.erase(aio_completion);
-      delete aio_completion;
+      aio_completion->release();
     }
 
     m_callback_cond.Signal();
@@ -877,6 +877,27 @@ TEST_F(TestImageWatcher, NotifySnapCreateError) {
 
   NotifyOps expected_notify_ops;
   expected_notify_ops += NOTIFY_OP_SNAP_CREATE;
+  ASSERT_EQ(expected_notify_ops, m_notifies);
+}
+
+TEST_F(TestImageWatcher, NotifySnapRemove) {
+  REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
+
+  librbd::ImageCtx *ictx;
+  ASSERT_EQ(0, open_image(m_image_name, &ictx));
+
+  ASSERT_EQ(0, register_image_watch(*ictx));
+  ASSERT_EQ(0, lock_image(*ictx, LOCK_EXCLUSIVE,
+        "auto " + stringify(m_watch_ctx->get_handle())));
+
+  m_notify_acks = boost::assign::list_of(
+    std::make_pair(NOTIFY_OP_SNAP_REMOVE, create_response_message(0)));
+
+  RWLock::RLocker l(ictx->owner_lock);
+  ASSERT_EQ(0, ictx->image_watcher->notify_snap_remove("snap"));
+
+  NotifyOps expected_notify_ops;
+  expected_notify_ops += NOTIFY_OP_SNAP_REMOVE;
   ASSERT_EQ(expected_notify_ops, m_notifies);
 }
 

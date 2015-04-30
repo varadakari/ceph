@@ -333,6 +333,7 @@ OPTION(fuse_debug, OPT_BOOL, false)
 OPTION(fuse_multithreaded, OPT_BOOL, true)
 OPTION(client_try_dentry_invalidate, OPT_BOOL, true) // the client should try to use dentry invaldation instead of remounting, on kernels it believes that will work for
 OPTION(client_die_on_failed_remount, OPT_BOOL, true)
+OPTION(client_check_pool_perm, OPT_BOOL, true)
 
 OPTION(crush_location, OPT_STR, "")       // whitespace-separated list of key=value pairs describing crush location
 
@@ -353,7 +354,7 @@ OPTION(journaler_prezero_periods, OPT_INT, 5)     // * journal object size
 OPTION(journaler_batch_interval, OPT_DOUBLE, .001)   // seconds.. max add latency we artificially incur
 OPTION(journaler_batch_max, OPT_U64, 0)  // max bytes we'll delay flushing; disable, for now....
 OPTION(mds_data, OPT_STR, "/var/lib/ceph/mds/$cluster-$id")
-OPTION(mds_max_file_size, OPT_U64, 1ULL << 40)
+OPTION(mds_max_file_size, OPT_U64, 1ULL << 40) // Used when creating new CephFS. Change with 'ceph mds set max_file_size <size>' afterwards
 OPTION(mds_cache_size, OPT_INT, 100000)
 OPTION(mds_cache_mid, OPT_FLOAT, .7)
 OPTION(mds_max_file_recover, OPT_U32, 32)
