@@ -716,7 +716,8 @@ public:
                  << unclean << " bytes remain" << dendl;
       r = -EBUSY;
     }
-    on_finish->complete(r);
+
+    work_queue->queue(on_finish, 0);
   }
 
   void ImageCtx::clear_nonexistence_cache() {
