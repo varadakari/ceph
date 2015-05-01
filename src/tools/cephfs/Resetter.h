@@ -26,7 +26,7 @@
 class Resetter : public MDSUtility {
   int rank; 
 public:
-  Resetter() {}
+  Resetter() : rank(0) {}
 
   void reset(int rank);
 };
