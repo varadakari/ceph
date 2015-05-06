@@ -5565,7 +5565,9 @@ bool MDCache::open_undef_inodes_dirfrags()
        ++p) {
     CInode *in = *p;
     assert(!in->is_base());
-    fetch_queue.insert(in->get_parent_dir());
+    if (!in->get_parent_dir()->is_complete) {
+      fetch_queue.insert(in->get_parent_dir());
+    }
   }
 
   if (fetch_queue.empty())
