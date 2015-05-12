@@ -689,7 +689,7 @@ public:
 
   void ImageCtx::invalidate_cache(Context *on_finish) {
     if (object_cacher == NULL) {
-      on_finish->complete(0);
+      work_queue->queue(on_finish, 0);
       return;
     }
 
