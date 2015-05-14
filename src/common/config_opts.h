@@ -634,6 +634,7 @@ OPTION(osd_scrub_end_hour, OPT_INT, 24)
 OPTION(osd_scrub_load_threshold, OPT_FLOAT, 0.5)
 OPTION(osd_scrub_min_interval, OPT_FLOAT, 60*60*24)    // if load is low
 OPTION(osd_scrub_max_interval, OPT_FLOAT, 7*60*60*24)  // regardless of load
+OPTION(osd_scrub_interval_limit, OPT_FLOAT, 0.5) // randomize the scheduled scrub in the span of [min,min*(1+interval_limit))
 OPTION(osd_scrub_chunk_min, OPT_INT, 5)
 OPTION(osd_scrub_chunk_max, OPT_INT, 25)
 OPTION(osd_scrub_sleep, OPT_FLOAT, 0)   // sleep between [deep]scrub ops
@@ -737,8 +738,6 @@ OPTION(rocksdb_paranoid, OPT_BOOL, false) // RocksDB will aggressively check con
 OPTION(rocksdb_log, OPT_STR, "/dev/null")  // enable rocksdb log file
 OPTION(rocksdb_info_log_level, OPT_STR, "info")  // info log level : debug , info , warn, error, fatal
 OPTION(rocksdb_wal_dir, OPT_STR, "")  //  rocksdb write ahead log file, put it to fast device will benifit wrtie performance
-OPTION(rocksdb_disableDataSync, OPT_BOOL, false) // if true, data files are not synced to stable storage
-OPTION(rocksdb_disableWAL, OPT_BOOL, false)  // if true, writes will not first go to the write ahead log
 
 
 /**

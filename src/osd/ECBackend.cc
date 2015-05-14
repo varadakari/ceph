@@ -235,7 +235,7 @@ struct RecoveryMessages {
   map<pg_shard_t, vector<PushOp> > pushes;
   map<pg_shard_t, vector<PushReplyOp> > push_replies;
   ObjectStore::Transaction *t;
-  RecoveryMessages() : t(new ObjectStore::Transaction) {}
+  RecoveryMessages() : t(NULL) {}
   ~RecoveryMessages() { assert(!t); }
 };
 
@@ -442,16 +442,20 @@ void ECBackend::dispatch_recovery_messages(RecoveryMessages &m, int priority)
     msg->compute_cost(cct);
     replies.insert(make_pair(i->first.osd, msg));
   }
-  m.t->register_on_complete(
-    get_parent()->bless_context(
-      new SendPushReplies(
-	get_parent(),
-	get_parent()->get_epoch(),
-	replies)));
-  m.t->register_on_applied(
-    new ObjectStore::C_DeleteTransaction(m.t));
-  get_parent()->queue_transaction(m.t);
-  m.t = NULL;
+
+  if (!replies.empty()) {
+    m.t->register_on_complete(
+	get_parent()->bless_context(
+	  new SendPushReplies(
+	    get_parent(),
+	    get_parent()->get_epoch(),
+	    replies)));
+    m.t->register_on_applied(
+	new ObjectStore::C_DeleteTransaction(m.t));
+    get_parent()->queue_transaction(m.t);
+    m.t = NULL;
+  };
+
   if (m.reads.empty())
     return;
   start_read_op(
@@ -687,6 +691,8 @@ bool ECBackend::handle_message(
   case MSG_OSD_PG_PUSH: {
     MOSDPGPush *op = static_cast<MOSDPGPush *>(_op->get_req());
     RecoveryMessages rm;
+    rm.t = new ObjectStore::Transaction;
+    assert(rm.t);
     for (vector<PushOp>::iterator i = op->pushes.begin();
 	 i != op->pushes.end();
 	 ++i) {
@@ -841,7 +847,6 @@ void ECBackend::handle_sub_write(
       get_parent()->whoami_shard().shard >= ec_impl->get_data_chunk_count())
     op.t.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
 
-  localt->append(op.t);
   if (on_local_applied_sync) {
     dout(10) << "Queueing onreadable_sync: " << on_local_applied_sync << dendl;
     localt->register_on_applied_sync(on_local_applied_sync);
@@ -857,7 +862,13 @@ void ECBackend::handle_sub_write(
       new SubWriteApplied(this, msg, op.tid, op.at_version)));
   localt->register_on_applied(
     new ObjectStore::C_DeleteTransaction(localt));
-  get_parent()->queue_transaction(localt, msg);
+  list<ObjectStore::Transaction*> tls;
+  tls.push_back(localt);
+  tls.push_back(new ObjectStore::Transaction);
+  tls.back()->swap(op.t);
+  tls.back()->register_on_complete(
+    new ObjectStore::C_DeleteTransaction(tls.back()));
+  get_parent()->queue_transactions(tls, msg);
 }
 
 void ECBackend::handle_sub_read(

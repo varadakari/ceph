@@ -140,8 +140,6 @@ public:
     string log_file;
     string wal_dir;
     string info_log_level;
-    bool disableDataSync;
-    bool disableWAL;
 
     int block_restart_interval;
     bool error_if_exists;
@@ -170,8 +168,6 @@ public:
       compression_type("none"),
       paranoid_checks(false), //< set to true if you want paranoid checks
       info_log_level("info"),
-      disableDataSync(false),
-      disableWAL(false),
 
       block_restart_interval(0), //< 0 means default
       error_if_exists(false) //< set to true if you want to check nonexistence

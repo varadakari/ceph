@@ -51,8 +51,6 @@ int RocksDBStore::init()
   options.log_file = g_conf->rocksdb_log;
   options.info_log_level = g_conf->rocksdb_info_log_level;
   options.wal_dir = g_conf->rocksdb_wal_dir;
-  options.disableDataSync = g_conf->rocksdb_disableDataSync;
-  options.disableWAL = g_conf->rocksdb_disableWAL;
   return 0;
 }
 
@@ -102,14 +100,6 @@ int RocksDBStore::do_open(ostream &out, bool create_if_missing)
   else
     ldoptions.compression = rocksdb::kNoCompression;
 
-  if(options.disableDataSync) {
-    derr << "Warning: DataSync is disabled, may lose data on node failure" << dendl;
-    ldoptions.disableDataSync = options.disableDataSync;
-  }
-
-  if(options.disableWAL) {
-    derr << "Warning: Write Ahead Log is disabled, may lose data on failure" << dendl;
-  }  
   if(options.wal_dir.length())
     ldoptions.wal_dir = options.wal_dir;
 
@@ -201,7 +191,6 @@ int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)
   RocksDBTransactionImpl * _t =
     static_cast<RocksDBTransactionImpl *>(t.get());
   rocksdb::WriteOptions woptions;
-  woptions.disableWAL = options.disableWAL;
   rocksdb::Status s = db->Write(woptions, _t->bat);
   utime_t lat = ceph_clock_now(g_ceph_context) - start;
   logger->inc(l_rocksdb_txns);
@@ -216,7 +205,6 @@ int RocksDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
     static_cast<RocksDBTransactionImpl *>(t.get());
   rocksdb::WriteOptions woptions;
   woptions.sync = true;
-  woptions.disableWAL = options.disableWAL;
   rocksdb::Status s = db->Write(woptions, _t->bat);
   utime_t lat = ceph_clock_now(g_ceph_context) - start;
   logger->inc(l_rocksdb_txns);
