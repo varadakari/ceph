@@ -48,6 +48,8 @@ endif
 ## automake environment
 
 AM_COMMON_CPPFLAGS = \
+	-I$(top_srcdir)/../zs_sdk/include \
+	-DSANDISK_FDF \
 	-D__CEPH__ \
 	-D_FILE_OFFSET_BITS=64 \
 	-D_REENTRANT \
@@ -199,7 +201,7 @@ LIBOSD += $(LIBPERFGLUE)
 LIBMDS += $(LIBPERFGLUE)
 
 # Always use system leveldb
-LIBOS += -lleveldb -lsnappy
+LIBOS += -lleveldb -lsnappy $(top_srcdir)/../zs_sdk/lib/libzsdll.a -ldl -llz4
 
 # Use this for binaries requiring libglobal
 CEPH_GLOBAL = $(LIBGLOBAL) $(LIBCOMMON) $(PTHREAD_LIBS) -lm $(CRYPTO_LIBS) $(EXTRALIBS)

@@ -6,6 +6,7 @@ noinst_LTLIBRARIES += libos_types.la
 libos_la_SOURCES = \
 	os/chain_xattr.cc \
 	os/DBObjectMap.cc \
+	os/FDFStore.cc \
 	os/GenericObjectMap.cc \
 	os/FileJournal.cc \
 	os/FileStore.cc \
@@ -55,6 +56,7 @@ noinst_HEADERS += \
 	os/FileStore.h \
 	os/FlatIndex.h \
 	os/FDCache.h \
+	os/FDFStore.h \
 	os/GenericFileStoreBackend.h \
 	os/HashIndex.h \
 	os/IndexManager.h \

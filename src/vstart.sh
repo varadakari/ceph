@@ -25,10 +25,10 @@ set -e
 [ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS="$MDS"
 [ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW="$RGW"
 
-[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=3
-[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=3
-[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=3
-[ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW=1
+[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=1
+[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=1
+[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=0
+[ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW=0
 
 [ -z "$CEPH_DIR" ] && CEPH_DIR="$PWD"
 [ -z "$CEPH_DEV_DIR" ] && CEPH_DEV_DIR="$CEPH_DIR/dev"
@@ -226,12 +226,12 @@ run() {
 
 if [ "$debug" -eq 0 ]; then
     CMONDEBUG='
-	debug mon = 10
-        debug ms = 1'
+#	debug mon = 10
+#        debug ms = 1'
     COSDDEBUG='
-        debug ms = 1'
+#        debug ms = 1'
     CMDSDEBUG='
-        debug ms = 1'
+#        debug ms = 1'
 else
     echo "** going verbose **"
     CMONDEBUG='
@@ -389,17 +389,19 @@ fi
 
 [mds]
 $DAEMONOPTS
-$CMDSDEBUG
-        mds debug frag = true
-        mds debug auth pins = true
-        mds debug subtrees = true
+#$CMDSDEBUG
+#        mds debug frag = true
+#        mds debug auth pins = true
+#        mds debug subtrees = true
         mds data = $CEPH_DEV_DIR/mds.\$id
-$extra_conf
+#$extra_conf
 [osd]
 $DAEMONOPTS
-        osd data = $CEPH_DEV_DIR/osd\$id
-        osd journal = $journal_path
-        osd journal size = 100
+	osd objectstore = fdfstore
+	osd op threads = 16
+	osd data = $CEPH_DEV_DIR/osd\$id
+	osd journal = $CEPH_DEV_DIR/osd\$id.journal
+	osd journal size = 100
         osd class tmp = out
         osd class dir = $OBJCLASS_PATH
         osd scrub load threshold = 5.0
@@ -410,19 +412,19 @@ $DAEMONOPTS
         filestore wbthrottle btrfs ios start flusher = 10
         filestore wbthrottle btrfs ios hard limit = 20
         filestore wbthrottle btrfs inodes hard limit = 30
-$COSDDEBUG
-$COSDMEMSTORE
-$extra_conf
+#$COSDDEBUG
+#$COSDMEMSTORE
+#$extra_conf
 [mon]
-        mon pg warn min per osd = 3
-        mon osd allow primary affinity = true
+#        mon pg warn min per osd = 3
+#        mon osd allow primary affinity = true
         mon reweight min pgs per osd = 4
 $DAEMONOPTS
-$CMONDEBUG
-$extra_conf
+#$CMONDEBUG
+#$extra_conf
         mon cluster log file = $CEPH_OUT_DIR/cluster.mon.\$id.log
-[global]
-$extra_conf
+#[global]
+#$extra_conf
 EOF
 		fi
 
@@ -503,8 +505,11 @@ EOF
 		    mkdir -p $CEPH_DEV_DIR/osd$osd
 	    fi
 
+	    export ZS_PROPERTY_FILE=/opt/sandisk/zs/config/zs_sample.prop
 	    uuid=`uuidgen`
 	    echo "add osd$osd $uuid"
+	    echo $ZS_PROPERTY_FILE
+	    export ZS_REFORMAT=1
 	    $SUDO $CEPH_ADM osd create $uuid
 	    $SUDO $CEPH_ADM osd crush add osd.$osd 1.0 host=$HOSTNAME root=default
 	    $SUDO $CEPH_BIN/ceph-osd -i $osd $ARGS --mkfs --mkkey --osd-uuid $uuid
@@ -513,6 +518,9 @@ EOF
 	    echo adding osd$osd key to auth repository
 	    $SUDO $CEPH_ADM -i $key_fn auth add osd.$osd osd "allow *" mon "allow profile osd"
 	fi
+	export ZS_PROPERTY_FILE=/opt/sandisk/zs/config/zs_sample.prop
+	echo $ZS_PROPERTY_FILE
+	export ZS_REFORMAT=0
 	echo start osd$osd
 	run 'osd' $SUDO $CEPH_BIN/ceph-osd -i $osd $ARGS $COSD_ARGS
     done
@@ -635,7 +643,7 @@ do_rgw()
     echo start rgw on http://localhost:$CEPH_RGW_PORT
     RGWDEBUG=""
     if [ "$debug" -ne 0 ]; then
-        RGWDEBUG="--debug-rgw=20"
+        RGWDEBUG="--debug-rgw=0"
     fi
     $CEPH_BIN/radosgw --log-file=${CEPH_OUT_DIR}/rgw.log ${RGWDEBUG} --debug-ms=1
 

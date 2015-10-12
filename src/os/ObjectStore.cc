@@ -20,6 +20,7 @@
 #include "MemStore.h"
 #include "KeyValueStore.h"
 #include "common/safe_io.h"
+#include "FDFStore.h"
 
 ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& type,
@@ -27,6 +28,9 @@ ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& journal,
 			         osflagbits_t flags)
 {
+  if (type == "fdfstore") {
+    return new FDFStore(cct, data);
+  }
   if (type == "filestore") {
     return new FileStore(data, journal, flags);
   }
