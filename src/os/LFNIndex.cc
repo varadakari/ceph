@@ -118,9 +118,12 @@ int LFNIndex::lookup(const ghobject_t &oid,
 		     int *exist)
 {
   WRAP_RETRY(
-  vector<string> path;
-  string short_name;
-  r = _lookup(oid, &path, &short_name, exist);
+
+  string full_path;
+  full_path.reserve(get_base_path().size() + 6 + oid.hobj.oid.name.size() + 10 + 1
+        + oid.hobj.get_key().size() + 2 + 1 + 14 + oid.hobj.nspace.size() + 1 + 8);
+
+  r = _lookup(oid, full_path);
   if (r < 0)
     goto out;
   string full_path = get_full_path(path, short_name);
@@ -622,6 +625,82 @@ static void append_escaped(string::const_iterator begin,
   }
 }
 
+int LFNIndex::lfn_generate_object_name(const ghobject_t &oid, string& full_name, bool io_path)
+{
+
+  if (!io_path){
+    if (index_version == HASH_INDEX_TAG){
+      full_name = lfn_generate_object_name_keyless(oid);
+      return 0;
+    }
+    if (index_version == HASH_INDEX_TAG_2){
+      full_name = lfn_generate_object_name_poolless(oid);
+      return 0;
+    }
+  }
+
+  string::const_iterator i = oid.hobj.oid.name.begin();
+  if (oid.hobj.oid.name.substr(0, 4) == "DIR_") {
+    full_name.append("\\d");
+    i += 4;
+  } else if (oid.hobj.oid.name[0] == '.') {
+    full_name.append("\\.");
+    ++i;
+  }
+  append_escaped(i, oid.hobj.oid.name.end(), &full_name);
+
+  full_name.push_back('_');
+  if (oid.hobj.get_key().size())
+  {
+        append_escaped(oid.hobj.get_key().begin(), oid.hobj.get_key().end(), &full_name);
+  }
+  full_name.push_back('_');
+
+
+  char buf[PATH_MAX];
+  if (oid.hobj.snap == CEPH_NOSNAP)
+    sprintf(buf, "head_%.*X_", (int)(sizeof(oid.hobj.hash)*2), oid.hobj.hash);
+  else if (oid.hobj.snap == CEPH_SNAPDIR)
+    sprintf(buf, "snapdir_%.*X_", (int)(sizeof(oid.hobj.hash)*2), oid.hobj.hash);
+  else
+    sprintf(buf, "%llx_%.*X_", (long long unsigned)oid.hobj.snap, (int)(sizeof(oid.hobj.hash)*2), oid.hobj.hash);
+  full_name += buf;
+
+
+  if (oid.hobj.nspace.size())
+  {
+        append_escaped(oid.hobj.nspace.begin(), oid.hobj.nspace.end(), &full_name);
+  }
+  full_name.push_back('_');
+
+  char* t = buf;
+  char* end = t + sizeof(buf);
+  if (oid.hobj.pool == -1)
+    t += sprintf(t, "none");
+  else
+    t += sprintf(t, "%llx", (long long unsigned)oid.hobj.pool);
+  full_name += buf;
+
+  if (oid.generation != ghobject_t::NO_GEN) {
+    assert(oid.shard_id != ghobject_t::NO_SHARD);
+    full_name.append("_");
+
+    t = buf;
+    end = t + sizeof(buf);
+    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.generation);
+    full_name += string(buf);
+
+    full_name.append("_");
+
+    t = buf;
+    end = t + sizeof(buf);
+    t += snprintf(t, end - t, "%x", (int)oid.shard_id);
+    full_name += string(buf);
+  }
+
+  return 0;
+}
+
 string LFNIndex::lfn_generate_object_name(const ghobject_t &oid)
 {
   if (index_version == HASH_INDEX_TAG)
@@ -720,6 +799,59 @@ string LFNIndex::lfn_generate_object_name_poolless(const ghobject_t &oid)
   full_name += string(snap_with_hash);
   return full_name;
 }
+
+int LFNIndex::lfn_get_name(const ghobject_t &oid, string& full_path, string* mangled_name )
+{
+  if (oid.hobj.oid.name.size() < 176){
+    if (mangled_name) {
+      lfn_generate_object_name(oid, *mangled_name);
+      full_path.push_back('/');
+      full_path += *mangled_name;
+    }
+    else {
+      full_path.push_back('/');
+      lfn_generate_object_name(oid, full_path, true);
+    }
+    return 0;
+  }
+  string full_name;
+  lfn_generate_object_name(oid, full_name);
+  int r;
+
+  int i = 0;
+  char buf[FILENAME_MAX_LEN + 1];
+  for ( ; ; ++i) {
+    string candidate = lfn_get_short_name(oid, i);
+    full_path.push_back('/');
+    full_path += candidate;
+    r = chain_getxattr(full_path.c_str(), get_lfn_attr().c_str(), buf, sizeof(buf));
+    if (r < 0) {
+      if (errno != ENODATA && errno != ENOENT)
+        return -errno;
+      if (errno == ENODATA) {
+        // Left over from incomplete transaction, it'll be replayed
+        maybe_inject_failure();
+        r = ::unlink(full_path.c_str());
+        maybe_inject_failure();
+        if (r < 0)
+          return -errno;
+      }
+      if (mangled_name)
+	*mangled_name = candidate;
+      return 0;
+    }
+    assert(r > 0);
+    buf[MIN((int)sizeof(buf) - 1, r)] = '\0';
+    if (!strcmp(buf, full_name.c_str())) {
+      if (mangled_name)
+	*mangled_name = candidate;
+      return 0;
+    }
+  }
+  assert(0); // Unreachable
+  return 0;
+}
+
 
 int LFNIndex::lfn_get_name(const vector<string> &path, 
 			   const ghobject_t &oid,

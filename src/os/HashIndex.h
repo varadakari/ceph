@@ -180,6 +180,11 @@ protected:
     int *exists
     );
 
+  int _lookup(
+    const ghobject_t &oid, 
+    string& full_path,
+    string* mangled_name = NULL);
+
   /**
    * Pre-hash the collection to create folders according to the expected number
    * of objects in this collection.
