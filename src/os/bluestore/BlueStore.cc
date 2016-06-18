@@ -2595,6 +2595,10 @@ int BlueStore::mkfs()
   if (r < 0)
     goto out_close_fm;
 
+  // check for parallel transaction support else bail out
+  if (!(g_conf->bluestore_submit_parallel_transaction && alloc->allows_parallel_submission()))
+     goto out_close_fm;
+
   r = write_meta("kv_backend", g_conf->bluestore_kvbackend);
   if (r < 0)
     goto out_close_alloc;
