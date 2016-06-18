@@ -1227,6 +1227,7 @@ public:
     list<CollectionRef> removed_collections; ///< colls we removed
 
     boost::intrusive::list_member_hook<> wal_queue_item;
+    boost::intrusive::list_member_hook<> kv_queue_item;
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
 
     bool kv_submitted = false; ///< true when we've been submitted to kv db
@@ -1339,6 +1340,16 @@ public:
 	boost::intrusive::list_member_hook<>,
 	&TransContext::wal_queue_item> > wal_queue_t;
     wal_queue_t wal_q; ///< transactions
+
+    typedef boost::intrusive::list<
+      TransContext,
+      boost::intrusive::member_hook<
+	TransContext,
+	boost::intrusive::list_member_hook<>,
+	&TransContext::kv_queue_item> > kv_q_t;
+
+    kv_q_t kv_q; ///< kv sync transactions
+    boost::intrusive::list_member_hook<> kv_osr_queue_item;
 
     boost::intrusive::list_member_hook<> wal_osr_queue_item;
 
@@ -1473,6 +1484,65 @@ public:
     }
   };
 
+  class KVWQ : public ThreadPool::WorkQueue<TransContext> {
+  public:
+    typedef boost::intrusive::member_hook<
+            OpSequencer,
+	    boost::intrusive::list_member_hook<>,
+	    &OpSequencer::kv_osr_queue_item> MemberOption;	    
+#if 0
+    typedef boost::intrusive::list<
+      OpSequencer,
+      boost::intrusive::member_hook<
+	OpSequencer,
+	boost::intrusive::list_member_hook<>,
+	&OpSequencer::kv_osr_queue_item> > kv_osr_queue_t;
+#endif
+    typedef boost::intrusive::list<
+      OpSequencer, MemberOption> kv_osr_queue_t;
+
+  private:
+    BlueStore *store;
+    kv_osr_queue_t kv_queue;
+
+  public:
+    KVWQ(BlueStore *s, time_t ti, time_t sti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<TransContext>("BlueStore::KVWQ", ti, sti, tp),
+	store(s) {
+    }
+    bool _empty() {
+      return kv_queue.empty();
+    }
+    bool _enqueue(TransContext *i) {
+      i->osr->kv_q.push_back(*i);
+      kv_queue.push_back(*i->osr);
+      return true;
+    }
+    void _dequeue(TransContext *p) {
+      assert(0 == "not needed, not implemented");
+    }
+    TransContext *_dequeue() {
+      if (kv_queue.empty())
+	return NULL;
+      OpSequencer *osr = &kv_queue.front();
+      TransContext *i = &osr->kv_q.front();
+      osr->kv_q.pop_front();
+      kv_queue.pop_front();
+      // Have to add a check, whether we are processing the correct txc
+      return i;
+    }
+    void _process(TransContext *i, ThreadPool::TPHandle &) override {
+      store->apply_kv_tx(i);
+    }
+    void _clear() {
+      assert(kv_queue.empty());
+    }
+
+    void flush() {
+      drain();
+    }
+  };
+
   struct KVSyncThread : public Thread {
     BlueStore *store;
     explicit KVSyncThread(BlueStore *s) : store(s) {}
@@ -1513,6 +1583,8 @@ private:
 
   interval_set<uint64_t> bluefs_extents;  ///< block extents owned by bluefs
 
+  ThreadPool kv_tp;
+  KVWQ kv_wq;
   std::mutex wal_lock;
   std::atomic<uint64_t> wal_seq = {0};
   ThreadPool wal_tp;
@@ -1552,6 +1624,7 @@ private:
   uint64_t max_alloc_size; ///< maximum allocation unit (power of 2)
 
   bool sync_wal_apply;	  ///< see config option bluestore_sync_wal_apply
+  bool parallel_tx_apply;
 
   std::atomic<Compressor::CompressionMode> comp_mode = {Compressor::COMP_NONE}; ///< compression mode
   CompressorRef compressor;
@@ -1664,6 +1737,8 @@ private:
   void _txc_finish_io(TransContext *txc);
   void _txc_finish_kv(TransContext *txc);
   void _txc_finish(TransContext *txc);
+
+  void apply_kv_tx(TransContext *txc);
 
   void _osr_reap_done(OpSequencer *osr);
 
