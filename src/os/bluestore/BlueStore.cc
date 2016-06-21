@@ -1361,6 +1361,15 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     throttle_wal_bytes(cct, "bluestore_wal_max_bytes",
 		       cct->_conf->bluestore_max_bytes +
 		       cct->_conf->bluestore_wal_max_bytes),
+    kv_tp(cct,
+	   "BlueStore::kv_tp",
+           "tp_kv",
+	   cct->_conf->bluestore_kv_sync_threads,
+	   "bluestore_kv_sync_threads"),
+    kv_wq(this,
+	     cct->_conf->bluestore_wal_thread_timeout,
+	     cct->_conf->bluestore_wal_thread_suicide_timeout,
+	     &kv_tp),
     wal_seq(0),
     wal_tp(cct,
 	   "BlueStore::wal_tp",
@@ -1376,6 +1385,7 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     kv_stop(false),
     logger(NULL),
     csum_type(bluestore_blob_t::CSUM_CRC32C),
+    parallel_tx_apply(cct->_conf->bluestore_submit_parallel_transaction),
     sync_wal_apply(cct->_conf->bluestore_sync_wal_apply)
 {
   _init_logger();
@@ -2722,6 +2732,7 @@ int BlueStore::mount()
 
   finisher.start();
   wal_tp.start();
+  kv_tp.start();
   kv_sync_thread.create("bstore_kv_sync");
 
   r = _wal_replay();
@@ -2736,6 +2747,8 @@ int BlueStore::mount()
 
  out_stop:
   _kv_stop();
+  kv_wq.drain();
+  kv_tp.stop();
   wal_wq.drain();
   wal_tp.stop();
   finisher.wait_for_empty();
@@ -2768,6 +2781,10 @@ int BlueStore::umount()
 
   dout(20) << __func__ << " stopping kv thread" << dendl;
   _kv_stop();
+  dout(20) << __func__ << " draining kv_wq" << dendl;
+  kv_wq.drain();
+  dout(20) << __func__ << " stopping kv_tp" << dendl;
+  kv_tp.stop();
   dout(20) << __func__ << " draining wal_wq" << dendl;
   wal_wq.drain();
   dout(20) << __func__ << " stopping wal_tp" << dendl;
@@ -4584,7 +4601,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	int r = db->submit_transaction_sync(txc->t);
 	assert(r == 0);
       }
-      {
+      if (parallel_tx_apply) {
+         kv_wq.queue(txc);
+      } else {
 	std::lock_guard<std::mutex> l(kv_lock);
 	kv_queue.push_back(txc);
 	kv_cond.notify_one();
@@ -4971,6 +4990,85 @@ void BlueStore::_kv_sync_thread()
       l.lock();
     }
   }
+  dout(10) << __func__ << " finish" << dendl;
+}
+
+void BlueStore::apply_kv_tx(TransContext* txc)
+{
+  utime_t start = ceph_clock_now(NULL);
+  dout(10) << __func__ << " start prallel tx submitions: " << txc << dendl;
+      alloc->commit_start();
+
+      // flush/barrier on block device
+      bdev->flush();
+
+      if (!g_conf->bluestore_sync_transaction &&
+	  !g_conf->bluestore_sync_submit_transaction) {
+	  _txc_finalize_kv(txc, txc->t);
+	  int r = db->submit_transaction(txc->t);
+	  assert(r == 0);
+	}
+
+      // one final transaction to force a sync
+      KeyValueDB::Transaction t = db->get_transaction();
+
+      vector<bluestore_extent_t> bluefs_gift_extents;
+      if (bluefs) {
+	int r = _balance_bluefs_freespace(&bluefs_gift_extents, t);
+	assert(r >= 0);
+	if (r > 0) {
+	  for (auto& p : bluefs_gift_extents) {
+	    fm->allocate(p.offset, p.length, t);
+	    bluefs_extents.insert(p.offset, p.length);
+	  }
+	  bufferlist bl;
+	  ::encode(bluefs_extents, bl);
+	  dout(10) << __func__ << " bluefs_extents now " << bluefs_extents
+		   << dendl;
+	  t->set(PREFIX_SUPER, "bluefs_extents", bl);
+	}
+      }
+
+      // cleanup sync wal keys
+	{
+	bluestore_wal_transaction_t* wt =txc->wal_txn;
+	// kv metadata updates
+	_txc_finalize_kv(txc, t);
+	// cleanup the data in overlays
+	if (wt) {
+	   for (auto& p : wt->ops) {
+	       for (auto q : p.removed_overlays) {
+                   string key;
+                   get_overlay_key(p.nid, q, &key);
+	           t->rm_single_key(PREFIX_OVERLAY, key);
+	       }
+	   }
+	   // cleanup the wal
+	   string key;
+	   get_wal_key(wt->seq, &key);
+	   t->rm_single_key(PREFIX_WAL, key);
+	}
+      }
+      int r = db->submit_transaction_sync(t);
+      assert(r == 0);
+
+      utime_t finish = ceph_clock_now(NULL);
+      utime_t dur = finish - start;
+      dout(20) << __func__ << " committed " << txc
+	       << " in " << dur << dendl;
+      _txc_state_proc(txc);
+
+      alloc->commit_finish();
+
+      // this is as good a place as any ...
+      _reap_collections();
+
+      if (bluefs) {
+	if (!bluefs_gift_extents.empty()) {
+	  _commit_bluefs_freespace(bluefs_gift_extents);
+	}
+      }
+
   dout(10) << __func__ << " finish" << dendl;
 }
 
