@@ -968,9 +968,9 @@ public:
 	&TransContext::kv_queue_item> > kv_q_t;
 
     kv_q_t kv_q; ///< kv sync transactions
+    boost::intrusive::list_member_hook<> kv_osr_queue_item;
 
     boost::intrusive::list_member_hook<> wal_osr_queue_item;
-    boost::intrusive::list_member_hook<> kv_osr_queue_item;
 
     Sequencer *parent;
 
@@ -1103,19 +1103,21 @@ public:
   };
 
   class KVWQ : public ThreadPool::WorkQueue<TransContext> {
-    // We need to order KV sync items within each Sequencer.  To do that,
-    // queue each txc under osr, and queue the osr's here.  When we
-    // dequeue an txc, requeue the osr if there are more pending, and
-    // do it at the end of the list so that the next thread does not
-    // get a conflicted txc.  Hold an osr mutex while doing the wal to
-    // preserve the ordering.
   public:
+    typedef boost::intrusive::member_hook<
+            OpSequencer,
+	    boost::intrusive::list_member_hook<>,
+	    &OpSequencer::kv_osr_queue_item> MemberOption;	    
+#if 0
     typedef boost::intrusive::list<
       OpSequencer,
       boost::intrusive::member_hook<
 	OpSequencer,
 	boost::intrusive::list_member_hook<>,
 	&OpSequencer::kv_osr_queue_item> > kv_osr_queue_t;
+#endif
+    typedef boost::intrusive::list<
+      OpSequencer, MemberOption> kv_osr_queue_t;
 
   private:
     BlueStore *store;
@@ -1130,8 +1132,8 @@ public:
       return kv_queue.empty();
     }
     bool _enqueue(TransContext *i) {
-      kv_queue.push_back(*i->osr);
       i->osr->kv_q.push_back(*i);
+      kv_queue.push_back(*i->osr);
       return true;
     }
     void _dequeue(TransContext *p) {
@@ -1198,12 +1200,12 @@ private:
 
   interval_set<uint64_t> bluefs_extents;  ///< block extents owned by bluefs
 
+  ThreadPool kv_tp;
+  KVWQ kv_wq;
   std::mutex wal_lock;
   atomic64_t wal_seq;
   ThreadPool wal_tp;
-  ThreadPool kv_tp;
   WALWQ wal_wq;
-  KVWQ kv_wq;
 
   Finisher finisher;
 

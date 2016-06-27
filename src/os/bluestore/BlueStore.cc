@@ -1313,8 +1313,8 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     kv_stop(false),
     logger(NULL),
     csum_type(bluestore_blob_t::CSUM_CRC32C),
-    parallel_tx_apply(cct->_conf->bluestore_submit_parallel_transaction),
-    sync_wal_apply(cct->_conf->bluestore_sync_wal_apply)
+    sync_wal_apply(cct->_conf->bluestore_sync_wal_apply),
+    parallel_tx_apply(cct->_conf->bluestore_submit_parallel_transaction)
 {
   _init_logger();
   g_ceph_context->_conf->add_observer(this);
