@@ -831,7 +831,6 @@ public:
     list<CollectionRef> removed_collections; ///< colls we removed
 
     boost::intrusive::list_member_hook<> wal_queue_item;
-    boost::intrusive::list_member_hook<> kv_queue_item;
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
     vector<OnodeRef> wal_op_onodes;
 
@@ -958,17 +957,7 @@ public:
 	&TransContext::wal_queue_item> > wal_queue_t;
     wal_queue_t wal_q; ///< transactions
 
-    typedef boost::intrusive::list<
-      TransContext,
-      boost::intrusive::member_hook<
-	TransContext,
-	boost::intrusive::list_member_hook<>,
-	&TransContext::kv_queue_item> > kv_q_t;
-
-    kv_q_t kv_q; ///< kv sync transactions
-
     boost::intrusive::list_member_hook<> wal_osr_queue_item;
-    boost::intrusive::list_member_hook<> kv_osr_queue_item;
 
     Sequencer *parent;
 
@@ -1100,63 +1089,6 @@ public:
     }
   };
 
-  class KVWQ : public ThreadPool::WorkQueue<TransContext> {
-    // We need to order KV sync items within each Sequencer.  To do that,
-    // queue each txc under osr, and queue the osr's here.  When we
-    // dequeue an txc, requeue the osr if there are more pending, and
-    // do it at the end of the list so that the next thread does not
-    // get a conflicted txc.  Hold an osr mutex while doing the wal to
-    // preserve the ordering.
-  public:
-    typedef boost::intrusive::list<
-      OpSequencer,
-      boost::intrusive::member_hook<
-	OpSequencer,
-	boost::intrusive::list_member_hook<>,
-	&OpSequencer::kv_osr_queue_item> > kv_osr_queue_t;
-
-  private:
-    BlueStore *store;
-    kv_osr_queue_t kv_queue;
-
-  public:
-    KVWQ(BlueStore *s, time_t ti, time_t sti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<TransContext>("BlueStore::KVWQ", ti, sti, tp),
-	store(s) {
-    }
-    bool _empty() {
-      return kv_queue.empty();
-    }
-    bool _enqueue(TransContext *i) {
-      kv_queue.push_back(*i->osr);
-      i->osr->kv_q.push_back(*i);
-      return true;
-    }
-    void _dequeue(TransContext *p) {
-      assert(0 == "not needed, not implemented");
-    }
-    TransContext *_dequeue() {
-      if (kv_queue.empty())
-	return NULL;
-      OpSequencer *osr = &kv_queue.front();
-      TransContext *i = &osr->kv_q.front();
-      osr->kv_q.pop_front();
-      kv_queue.pop_front();
-      // Have to add a check, whether we are processing the correct txc
-      return i;
-    }
-    void _process(TransContext *i, ThreadPool::TPHandle &) override {
-      store->apply_kv_tx(i);
-    }
-    void _clear() {
-      assert(kv_queue.empty());
-    }
-
-    void flush() {
-      drain();
-    }
-  };
-
   struct KVSyncThread : public Thread {
     BlueStore *store;
     explicit KVSyncThread(BlueStore *s) : store(s) {}
@@ -1199,9 +1131,7 @@ private:
   std::mutex wal_lock;
   atomic64_t wal_seq;
   ThreadPool wal_tp;
-  ThreadPool kv_tp;
   WALWQ wal_wq;
-  KVWQ kv_wq;
 
   Finisher finisher;
 
