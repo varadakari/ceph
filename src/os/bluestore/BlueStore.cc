@@ -2162,7 +2162,8 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     kv_stop(false),
     logger(NULL),
     csum_type(bluestore_blob_t::CSUM_CRC32C),
-    sync_wal_apply(cct->_conf->bluestore_sync_wal_apply)
+    sync_wal_apply(cct->_conf->bluestore_sync_wal_apply),
+    parallel_tx_apply(cct->_conf->bluestore_submit_parallel_transaction)
 {
   _init_logger();
   g_ceph_context->_conf->add_observer(this);
@@ -3673,7 +3674,6 @@ int BlueStore::mount()
     f->start();
   }
   wal_tp.start();
-  kv_tp.start();
   kv_sync_thread.create("bstore_kv_sync");
 
   r = _wal_replay();
@@ -3688,8 +3688,6 @@ int BlueStore::mount()
 
  out_stop:
   _kv_stop();
-  kv_wq.drain();
-  kv_tp.stop();
   wal_wq.drain();
   wal_tp.stop();
   for (auto f : finishers) {
@@ -3724,10 +3722,6 @@ int BlueStore::umount()
 
   dout(20) << __func__ << " stopping kv thread" << dendl;
   _kv_stop();
-  dout(20) << __func__ << " draining kv_wq" << dendl;
-  kv_wq.drain();
-  dout(20) << __func__ << " stopping kv_tp" << dendl;
-  kv_tp.stop();
   dout(20) << __func__ << " draining wal_wq" << dendl;
   wal_wq.drain();
   dout(20) << __func__ << " stopping wal_tp" << dendl;
@@ -5765,7 +5759,7 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	assert(r == 0);
       }
       if (parallel_tx_apply) {
-         kv_wq.queue(txc);
+        apply_kv_tx(txc);
       } else {
 	std::lock_guard<std::mutex> l(kv_lock);
 	kv_queue.push_back(txc);
@@ -5979,7 +5973,7 @@ void BlueStore::_txc_finish(TransContext *txc)
 
   OpSequencerRef osr = txc->osr;
   {
-    std::lock_guard<std::mutex> l(osr->qlock);
+    //std::lock_guard<std::mutex> l(osr->qlock);
     txc->state = TransContext::STATE_DONE;
   }
 
@@ -5988,6 +5982,11 @@ void BlueStore::_txc_finish(TransContext *txc)
 
 void BlueStore::_osr_reap_done(OpSequencer *osr)
 {
+  //std::lock_guard<std::mutex> l(osr->qlock);
+  if (!parallel_tx_apply) {
+     osr->qlock.lock();
+  }
+  dout(20) << __func__ << " osr " << osr << dendl;
   CollectionRef c;
 
   {
@@ -6018,6 +6017,9 @@ void BlueStore::_osr_reap_done(OpSequencer *osr)
     c->cache->trim(
       g_conf->bluestore_onode_cache_size,
       g_conf->bluestore_buffer_cache_size);
+  }
+  if (!parallel_tx_apply) {
+     osr->qlock.unlock();
   }
 }
 
@@ -6210,7 +6212,6 @@ void BlueStore::_kv_sync_thread()
   }
   dout(10) << __func__ << " finish" << dendl;
 }
-
 void BlueStore::apply_kv_tx(TransContext* txc)
 {
   utime_t start = ceph_clock_now(NULL);
@@ -6230,7 +6231,7 @@ void BlueStore::apply_kv_tx(TransContext* txc)
       // one final transaction to force a sync
       KeyValueDB::Transaction t = db->get_transaction();
 
-      vector<bluestore_extent_t> bluefs_gift_extents;
+      vector<bluestore_pextent_t> bluefs_gift_extents;
       if (bluefs) {
 	int r = _balance_bluefs_freespace(&bluefs_gift_extents, t);
 	assert(r >= 0);
@@ -6254,13 +6255,6 @@ void BlueStore::apply_kv_tx(TransContext* txc)
 	_txc_finalize_kv(txc, t);
 	// cleanup the data in overlays
 	if (wt) {
-	   for (auto& p : wt->ops) {
-	       for (auto q : p.removed_overlays) {
-                   string key;
-                   get_overlay_key(p.nid, q, &key);
-	           t->rm_single_key(PREFIX_OVERLAY, key);
-	       }
-	   }
 	   // cleanup the wal
 	   string key;
 	   get_wal_key(wt->seq, &key);
