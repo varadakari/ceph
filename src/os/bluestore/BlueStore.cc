@@ -2597,8 +2597,11 @@ int BlueStore::mkfs()
     goto out_close_fm;
 
   // check for parallel transaction support else bail out
-  if (!(g_conf->bluestore_submit_parallel_transaction && alloc->allows_parallel_submission()))
+  if (g_conf->bluestore_submit_parallel_transaction && ! alloc->allows_parallel_submission()) {
+     derr << __func__ << " parallel tx: " << g_conf->bluestore_submit_parallel_transaction  << dendl;
+     derr << __func__ << " allows parallel tx: " << g_conf->bluestore_submit_parallel_transaction  << dendl;
      goto out_close_fm;
+  }
 
   r = write_meta("kv_backend", g_conf->bluestore_kvbackend);
   if (r < 0)
@@ -3234,6 +3237,9 @@ void BlueStore::_sync()
     dout(20) << " waiting for kv to commit" << dendl;
     kv_sync_cond.wait(l);
   }
+  // when we don't go through kv_sync_thread
+  // need tp wait for all the aio cb threads to finish
+  // does flush take care of it?
 
   dout(10) << __func__ << " done" << dendl;
 }
