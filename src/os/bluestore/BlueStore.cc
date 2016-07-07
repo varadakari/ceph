@@ -548,7 +548,10 @@ void BlueStore::LRUCache::trim(uint64_t onode_max, uint64_t buffer_max)
     }
     o->get();  // paranoia
     o->space->onode_map.erase(o->oid);
+    // do we need this lock here? we are holding bluestore lock
+    o->blob_lock.lock();
     o->blob_map._clear();    // clear blobs and their buffers, too
+    o->blob_lock.unlock();
     o->put();
     --num;
   }
@@ -817,6 +820,7 @@ void BlueStore::TwoQCache::trim(uint64_t onode_max, uint64_t buffer_max)
     }
     o->get();  // paranoia
     o->space->onode_map.erase(o->oid);
+    // should we protet the incore copies trimming?
     o->blob_map._clear();    // clear blobs and their buffers, too
     o->put();
     --num;
@@ -1076,7 +1080,9 @@ void BlueStore::OnodeSpace::clear()
     cache->_rm_onode(p.second);
 
     // clear blobs and their buffers too, while we have cache->lock
+    p.second->blob_lock.lock();
     p.second->blob_map._clear();
+    p.second->blob_lock.unlock();
   }
   onode_map.clear();
 }
@@ -4565,6 +4571,7 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       txc->state = TransContext::STATE_KV_QUEUED;
       // FIXME: use a per-txc dirty blob list?
       for (auto& o : txc->onodes) {
+        std::lock_guard<std::mutex> l(o->blob_lock);
 	for (auto& p : o->blob_map.blob_map) {
 	  p.bc.finish_write(txc->seq);
 	}
@@ -5863,7 +5870,9 @@ void BlueStore::_do_write_small(
   }
 
   // new blob.
+  o->blob_lock.lock();
   b = o->blob_map.new_blob(c->cache);
+  o->blob_lock.unlock();
   unsigned alloc_len = min_alloc_size;
   uint64_t b_off = offset % alloc_len;
   b->bc.write(txc->seq, b_off, bl, wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
@@ -5897,7 +5906,9 @@ void BlueStore::_do_write_big(
 	   << " compress " << (int)wctx->compress
 	   << std::dec << dendl;
   while (length > 0) {
+    o->blob_lock.lock();
     Blob *b = o->blob_map.new_blob(c->cache);
+    o->blob_lock.unlock();
     auto l = MIN(max_blob_len, length);
     bufferlist t;
     blp.copy(l, t);
@@ -6084,6 +6095,7 @@ void BlueStore::_wctx_finish(
       dout(20) << __func__ << " rm blob " << *b << dendl;
       txc->statfs_delta.compressed() -= b->blob.get_compressed_payload_length();
       if (l.blob >= 0) {
+        std::lock_guard<std::mutex> l(o->blob_lock);
 	o->blob_map.erase(b);
       } else {
 	o->bnode->blob_map.erase(b);
@@ -6638,8 +6650,11 @@ int BlueStore::_clone(TransContext *txc,
       for (auto& p : oldo->onode.extent_map) {
 	if (!p.second.is_shared() && moved_blobs.count(p.second.blob) == 0) {
 	  Blob *b = oldo->blob_map.get(p.second.blob);
+	  oldo->blob_lock.lock();
 	  oldo->blob_map.erase(b);
+	  oldo->blob_lock.unlock();
 	  newo->bnode->blob_map.claim(b);
+	  // should we protect the moving?
 	  moved_blobs[p.second.blob] = b->id;
 	  dout(30) << __func__ << "  moving old onode blob " << p.second.blob
 		   << " to bnode blob " << b->id << dendl;

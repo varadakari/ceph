@@ -481,6 +481,7 @@ public:
     BlobMap blob_map;       ///< local blobs (this onode onode)
 
     std::mutex flush_lock;  ///< protect flush_txns
+    std::mutex blob_lock;
     std::condition_variable flush_cond;   ///< wait here for unapplied txns
     set<TransContext*> flush_txns;   ///< committing or wal txns
 
