@@ -4555,20 +4555,29 @@ void BlueStore::_txc_state_proc(TransContext *txc)
   while (true) {
     dout(10) << __func__ << " txc " << txc
 	     << " " << txc->get_state_name() << dendl;
+{
+      BackTrace bt(0);
+      ostringstream oss;
+      bt.print(oss);
+      dout(10) << oss.str() << dendl;
+}
     switch (txc->state) {
     case TransContext::STATE_PREPARE:
       txc->log_state_latency(logger, l_bluestore_state_prepare_lat);
       if (txc->ioc.has_aios()) {
 	txc->state = TransContext::STATE_AIO_WAIT;
 	_txc_aio_submit(txc);
-	return;
+      if (!g_conf->bluestore_sync_transaction)
+	 return;
       }
       // ** fall-thru **
 
     case TransContext::STATE_AIO_WAIT:
       txc->log_state_latency(logger, l_bluestore_state_aio_wait_lat);
       _txc_finish_io(txc);  // may trigger blocked txc's too
-      return;
+      if (!g_conf->bluestore_sync_transaction ||
+	  (txc->onodes.empty() && !txc->wal_txn))
+         return;
 
     case TransContext::STATE_IO_DONE:
       //assert(txc->osr->qlock.is_locked());  // see _txc_finish_io
@@ -4591,19 +4600,21 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	int r = db->submit_transaction_sync(txc->t);
 	assert(r == 0);
       }
-      if (parallel_tx_apply) {
+      if (parallel_tx_apply || g_conf->bluestore_sync_transaction) {
         apply_kv_tx(txc);
       } else {
 	std::lock_guard<std::mutex> l(kv_lock);
 	kv_queue.push_back(txc);
 	kv_cond.notify_one();
       }
-      return;
+      if (!g_conf->bluestore_sync_transaction)
+         return;
     case TransContext::STATE_KV_QUEUED:
       txc->log_state_latency(logger, l_bluestore_state_kv_queued_lat);
       txc->state = TransContext::STATE_KV_DONE;
       _txc_finish_kv(txc);
       // ** fall-thru **
+      dout(10) << __func__ << "After _txc_finish_kv "<< dendl;
 
     case TransContext::STATE_KV_DONE:
       txc->log_state_latency(logger, l_bluestore_state_kv_done_lat);
@@ -4617,6 +4628,15 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	return;
       }
       txc->state = TransContext::STATE_FINISHING;
+      dout(10) << __func__ << " txc " << txc
+	     << " " << txc->get_state_name() << dendl;
+      dout(10) << __func__ << "wal: " << txc->wal_txn << dendl;
+{
+      BackTrace bt(0);
+      ostringstream oss;
+      bt.print(oss);
+      dout(10) << oss.str() << dendl;
+}
       break;
 
     case TransContext::STATE_WAL_APPLYING:
@@ -4641,6 +4661,14 @@ void BlueStore::_txc_state_proc(TransContext *txc)
     case TransContext::TransContext::STATE_FINISHING:
       txc->log_state_latency(logger, l_bluestore_state_finishing_lat);
       _txc_finish(txc);
+      dout(10) << __func__ << " txc " << txc
+	     << " " << txc->get_state_name() << dendl;
+{
+      BackTrace bt(0);
+      ostringstream oss;
+      bt.print(oss);
+      dout(10) << oss.str() << dendl;
+}
       return;
 
     default:
@@ -4670,18 +4698,29 @@ void BlueStore::_txc_finish_io(TransContext *txc)
     --p;
     if (p->state < TransContext::STATE_IO_DONE) {
       dout(20) << __func__ << " " << txc << " blocked by " << &*p << " "
-	       << p->get_state_name() << dendl;
-      return;
+	      << p->get_state_name() << dendl;
+      //return;
     }
     if (p->state > TransContext::STATE_IO_DONE) {
       ++p;
       break;
     }
   }
-  do {
-    _txc_state_proc(&*p++);
-  } while (p != osr->q.end() &&
-	   p->state == TransContext::STATE_IO_DONE);
+  if (g_conf->bluestore_sync_transaction) {
+    int i = 0;
+    do {
+      dout(10) << __func__ << " " << txc << " * " << i++ <<" .  " << txc->get_state_name() << dendl;
+      _txc_state_proc(txc);
+    } while (txc && !txc->onodes.empty());
+  } else {
+    do {
+      _txc_state_proc(&*p++);
+      dout(10) << __func__ << " " << txc <<"   " <<  &*p << " "
+		<< p->get_state_name() << dendl;
+    } while (txc && p != osr->q.end() &&
+	    p->state == TransContext::STATE_IO_DONE);
+  }
+  dout(10) << __func__ << " " << txc << "Done with IO" << dendl;
 }
 
 void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
@@ -4774,8 +4813,10 @@ void BlueStore::_txc_finish(TransContext *txc)
     txc->removed_collections.pop_front();
   }
 
-  throttle_wal_ops.put(txc->ops);
-  throttle_wal_bytes.put(txc->bytes);
+  //if (!g_conf->bluestore_sync_transaction) {
+    throttle_wal_ops.put(txc->ops);
+    throttle_wal_bytes.put(txc->bytes);
+  //}
 
   OpSequencerRef osr = txc->osr;
   {
@@ -4789,7 +4830,7 @@ void BlueStore::_txc_finish(TransContext *txc)
 void BlueStore::_osr_reap_done(OpSequencer *osr)
 {
   //std::lock_guard<std::mutex> l(osr->qlock);
-  if (!parallel_tx_apply) {
+  if (!parallel_tx_apply && !g_conf->bluestore_sync_transaction) {
      osr->qlock.lock();
   }
   dout(20) << __func__ << " osr " << osr << dendl;
@@ -4809,6 +4850,7 @@ void BlueStore::_osr_reap_done(OpSequencer *osr)
     osr->q.pop_front();
     txc->log_state_latency(logger, l_bluestore_state_done_lat);
     delete txc;
+    txc = NULL;
     osr->qcond.notify_all();
     if (osr->q.empty())
       dout(20) << __func__ << " osr " << osr << " q now empty" << dendl;
@@ -4829,6 +4871,12 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
 	   << " allocated 0x" << txc->allocated
 	   << " released 0x" << txc->released
 	   << std::dec << dendl;
+{
+      BackTrace bt(0);
+      ostringstream oss;
+      bt.print(oss);
+      dout(10) << oss.str() << dendl;
+}
 
   // We have to handle the case where we allocate *and* deallocate the
   // same region in this transaction.  The freelist doesn't like that.
@@ -5028,7 +5076,8 @@ void BlueStore::apply_kv_tx(TransContext* txc)
 	{
 	bluestore_wal_transaction_t* wt =txc->wal_txn;
 	// kv metadata updates
-	_txc_finalize_kv(txc, t);
+        if (!g_conf->bluestore_sync_transaction)
+	  _txc_finalize_kv(txc, t);
 	// cleanup the data in overlays
 	if (wt) {
 	   // cleanup the wal
@@ -5044,7 +5093,9 @@ void BlueStore::apply_kv_tx(TransContext* txc)
       utime_t dur = finish - start;
       dout(20) << __func__ << " committed " << txc
 	       << " in " << dur << dendl;
-      _txc_state_proc(txc);
+
+      if (!g_conf->bluestore_sync_transaction)
+         _txc_state_proc(txc);
 
       alloc->commit_finish();
 
@@ -5245,6 +5296,8 @@ int BlueStore::queue_transactions(
   throttle_wal_ops.get(txc->ops);
   throttle_wal_bytes.get(txc->bytes);
 
+  dout(10) << __func__ << " ops: " << txc->ops << " bytes: " << txc->bytes << dendl;
+
   // execute (start)
   _txc_state_proc(txc);
   return 0;
@@ -5253,7 +5306,29 @@ int BlueStore::queue_transactions(
 void BlueStore::_txc_aio_submit(TransContext *txc)
 {
   dout(10) << __func__ << " txc " << txc << dendl;
-  bdev->aio_submit(&txc->ioc);
+
+  if (g_conf->bluestore_sync_transaction &&
+      txc->state != TransContext::STATE_WAL_AIO_WAIT )  {
+    list<FS::aio_t>::iterator p = txc->ioc.pending_aios.begin();
+    while (p != txc->ioc.pending_aios.end()) {
+      FS::aio_t& aio = *p;
+      dout(20) << __func__ << "  aio " << &aio << " fd " << aio.fd
+	      << " 0x" << std::hex << aio.offset << "~" << aio.length
+	      << std::dec << dendl;
+      for (vector<iovec>::iterator q = aio.iov.begin(); q != aio.iov.end(); ++q) {
+	dout(30) << __func__ << "   iov " << (void*)q->iov_base
+		<< " len " << q->iov_len << dendl;
+	struct iovec iov;
+	iov.iov_base = q->iov_base;
+	iov.iov_len = q->iov_len;
+	pwritev(aio.fd, &iov, 1, aio.offset);
+      }
+      ++p;
+    }
+    txc->ioc.pending_aios.clear();
+  } else {
+    bdev->aio_submit(&txc->ioc);
+  }
 }
 
 void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)

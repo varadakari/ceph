@@ -143,7 +143,7 @@ void WorkloadGenerator::_suppress_ops_or_die(std::string& val)
 
 void WorkloadGenerator::init_args(vector<const char*> args)
 {
-  for (std::vector<const char*>::iterator i = args.begin(); i != args.end();) {
+  for (std::vector<const char*>::iterator i = args.begin(); i != args.end();i++) {
     string val;
 
     if (ceph_argparse_double_dash(args, i)) {
