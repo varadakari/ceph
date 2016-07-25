@@ -19,6 +19,7 @@
 #include <boost/random/uniform_int.hpp>
 #include <map>
 #include <sys/time.h>
+#include <thread>
 
 #include "TestObjectStoreState.h"
 
@@ -51,6 +52,7 @@ class WorkloadGenerator : public TestObjectStoreState {
     C_StatState(WorkloadGenerator *state, utime_t s)
       : start(s), written_data(0), wrkldgen(state) { }
   };
+  //void handle_signal(int signum);
 
 
  protected:
@@ -118,11 +120,25 @@ class WorkloadGenerator : public TestObjectStoreState {
       C_StatState *stat);
 
   void do_stats();
+  void write_objects(coll_entry_t *entry);
+  char* gen_buffer(uint64_t size);
+  void create_collections();
+  void do_load_gen();
+  //void do_join(std::thread& t) const;
+  //bool stop;
+  //void join_all(std::vector<std::thread>& v);
+  // write threads per each pg/collection
+  //std::vector<std::thread> write_threads;
 
 public:
   explicit WorkloadGenerator(vector<const char*> args);
   ~WorkloadGenerator() {
     m_store->umount();
+  }
+
+  std::thread create_worker(coll_entry_t* entry)
+  {
+    return std::thread([=] { write_objects(entry); });
   }
 
   class C_OnReadable: public TestObjectStoreState::C_OnFinished {

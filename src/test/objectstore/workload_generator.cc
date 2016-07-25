@@ -23,11 +23,13 @@
 #include "os/ObjectStore.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
+#include "global/signal_handler.h"
 #include "common/debug.h"
 #include <boost/scoped_ptr.hpp>
 #include <boost/lexical_cast.hpp>
 #include "workload_generator.h"
 #include "include/assert.h"
+
 
 #include "TestObjectStoreState.h"
 
@@ -35,9 +37,18 @@ static const char *our_name = NULL;
 void usage();
 
 boost::scoped_ptr<WorkloadGenerator> wrkldgen;
+bool stop=false;
+std::vector<std::thread> write_threads;
 
-#define dout_subsys ceph_subsys_
+#define dout_subsys ceph_subsys_filestore
 
+char* gen_buffer(uint64_t size)
+{
+    char *buffer = new char[size];
+    boost::random::random_device rand;
+    rand.generate(buffer, buffer + size);
+    return buffer;
+}
 
 WorkloadGenerator::WorkloadGenerator(vector<const char*> args)
   : TestObjectStoreState(NULL),
@@ -80,7 +91,8 @@ WorkloadGenerator::WorkloadGenerator(vector<const char*> args)
   set_max_in_flight(m_max_in_flight);
   set_num_objs_per_coll(def_num_obj_per_coll);
 
-  init(m_num_colls, 0);
+  // we are creating the collections on our own
+  //init(m_num_colls, 0);
 
   dout(0) << "#colls          = " << m_num_colls << dendl;
   dout(0) << "#objs per coll  = " << m_num_objs_per_coll << dendl;
@@ -246,6 +258,65 @@ void WorkloadGenerator::get_filled_byte_array(bufferlist& bl, size_t size)
   bl.append(bp);
 }
 
+void do_join(std::thread& t)
+{
+    t.join();
+}
+
+void join_all(std::vector<std::thread>& v)
+{
+    std::for_each(v.begin(),v.end(), do_join);
+    //std::for_each(v.begin(),v.end(),bind1st(mem_fun(&WorkloadGenerator::do_join), this));
+}
+
+char* WorkloadGenerator::gen_buffer(uint64_t size)
+{
+    char *buffer = new char[size];
+    boost::random::random_device rand;
+    rand.generate(buffer, buffer + size);
+    return buffer;
+}
+
+#if 0
+void handle_load_signal(int signum)
+{
+  wrkldgen->handle_signal(signum);
+}
+#endif
+
+void handle_signal(int signum)
+{
+  assert(signum == SIGINT || signum == SIGTERM);
+  derr << "*** Got signal " << sig_str(signum) << " ***" << dendl;
+  stop = true;
+  join_all(write_threads);
+}
+
+
+void WorkloadGenerator::write_objects(coll_entry_t *entry)
+{
+  int r = 0;	
+  bufferlist bl;
+  char *buf = gen_buffer(m_write_data_bytes);
+  bufferptr bp = buffer::claim_char(m_write_data_bytes, buf);
+  bl.push_back(bp);
+  int i = 0;
+  while (!stop)	{
+    ObjectStore::Transaction *t = new ObjectStore::Transaction;
+    string object = "object";
+    object.append(to_string(i));
+    ghobject_t hoid(hobject_t(sobject_t(object, CEPH_NOSNAP)));
+    t->write(entry->m_coll, hoid, 0, bl.length(), bl, 0);
+    r = m_store->queue_transaction(&(entry->m_osr), std::move(*t),
+        new C_OnFinished(this));
+    assert(r == 0);
+    inc_in_flight();
+    i++;
+  }
+// wait for all the ops to be done so that we can so join after this
+  wait_for_done();
+}
+
 void WorkloadGenerator::do_write_object(ObjectStore::Transaction *t,
 					coll_t coll, hobject_t obj,
 					C_StatState *stat)
@@ -366,6 +437,41 @@ void WorkloadGenerator::do_destroy_collection(ObjectStore::Transaction *t,
   t->remove(coll_t::meta(), entry->m_meta_obj);
 }
 
+void WorkloadGenerator::create_collections()
+{
+  dout(5) << __func__ << " colls: " <<  m_num_colls << dendl;
+
+  ObjectStore::Sequencer osr(__func__);
+  ObjectStore::Transaction t;
+
+  t.create_collection(coll_t::meta(), 0);
+  m_store->apply_transaction(&osr, std::move(t));
+
+  wait_for_ready();
+
+  for (int i = 0; i < m_num_colls; i++) {
+    int coll_id = i;
+    coll_entry_t *entry = coll_create(coll_id);
+    dout(5) << "init create collection " << entry->m_coll.to_str()
+        << " meta " << entry->m_meta_obj << dendl;
+
+    ObjectStore::Transaction *t = new ObjectStore::Transaction;
+    t->create_collection(entry->m_coll, 32);
+    m_store->queue_transaction(&(entry->m_osr), std::move(*t),
+        new C_OnFinished(this));
+    delete t;
+    inc_in_flight();
+
+    m_collections.insert(make_pair(coll_id, entry));
+    m_collections_ids.push_back(coll_id);
+    m_next_coll_nr++;
+  }
+  dout(5) << __func__ << " has " << m_in_flight.read() << "in-flight transactions" << dendl;
+  wait_for_done();
+  dout(5) << __func__ << "finished" << dendl;
+
+}
+
 TestObjectStoreState::coll_entry_t
 *WorkloadGenerator::do_create_collection(ObjectStore::Transaction *t,
                                          C_StatState *stat)
@@ -385,6 +491,26 @@ TestObjectStoreState::coll_entry_t
   return entry;
 }
 
+#if 0
+std::thread create_worker(const coll_entry_t* entry)
+{
+  return std::thread([=] { write_objects(entry) });
+}
+#endif
+
+void WorkloadGenerator::do_load_gen()
+{
+    // create as many threads as collections(worst case) and write objects
+    // Need to distributed the load depending on the pg seed or number and
+    // reduce the number of thereads
+    for (int i=0; i<m_num_colls; i++) {
+      int coll_id = m_collections_ids[i];
+      coll_entry_t *entry = m_collections[coll_id];
+      //td::thread th1 = create_worker(entry);
+      //write_threads.push_back(std::thread(&WorkloadGenerator::write_objects, entry));
+      write_threads.push_back(create_worker(entry));
+    }
+}
 void WorkloadGenerator::do_stats()
 {
   utime_t now = ceph_clock_now(NULL);
@@ -406,104 +532,34 @@ void WorkloadGenerator::do_stats()
   m_stats_lock.Unlock();
 }
 
+  //  
+  //1. create the collections 
+  //2. create the number of threads we need and share the load among them 
+  //3. Have a switch to write more xattars also
+  //4. Add runtime/number of ops control per collection
+  //5. Enumerate option(future)
+  //6. stats
+  //7. teardown the setup or keep the data
+  //8. sucessful shutdown
+
 void WorkloadGenerator::run()
 {
-  bool create_coll = false;
-  int ops_run = 0;
+  //bool create_coll = false;
+  //int ops_run = 0;
 
   utime_t stats_interval(m_stats_show_secs, 0);
   utime_t now = ceph_clock_now(NULL);
   utime_t stats_time = now;
   m_stats_begin = now;
+  //create the collections
+  create_collections();
+  // generate the load wih desired block size
+  do_load_gen();
 
-  do {
-    C_StatState *stat_state = NULL;
-
-    if (m_num_ops && (ops_run == m_num_ops))
-      break;
-
-    if (!create_coll && !m_collections.size()) {
-      dout(0) << "We ran out of collections!" << dendl;
-      break;
-    }
-
-    dout(5) << __func__
-        << " m_finished_lock is-locked: " << m_finished_lock.is_locked()
-        << " in-flight: " << m_in_flight.read()
-        << dendl;
-
-    wait_for_ready();
-
-    ObjectStore::Transaction *t = new ObjectStore::Transaction;
-    Context *c;
-    bool destroy_collection = false;
-    TestObjectStoreState::coll_entry_t *entry = NULL;
-
-
-    if (m_do_stats) {
-      utime_t now = ceph_clock_now(NULL);
-      utime_t elapsed = now - stats_time;
-      if (elapsed >= stats_interval) {
-	do_stats();
-	stats_time = now;
-      }
-      stat_state = new C_StatState(this, now);
-    }
-
-    if (create_coll) {
-      create_coll = false;
-
-      entry = do_create_collection(t, stat_state);
-      if (!entry) {
-        dout(0) << __func__ << " something went terribly wrong creating coll" << dendl;
-        break;
-      }
-
-      c = new C_OnReadable(this);
-      goto queue_tx;
-    }
-
-    destroy_collection = should_destroy_collection();
-    entry = get_rnd_coll_entry(destroy_collection);
-    assert(entry != NULL);
-
-    if (destroy_collection) {
-      do_destroy_collection(t, entry, stat_state);
-      c = new C_OnDestroyed(this, entry);
-      if (!m_num_ops)
-        create_coll = true;
-    } else {
-      hobject_t *obj = get_rnd_obj(entry);
-
-      do_write_object(t, entry->m_coll, *obj, stat_state);
-      do_setattr_object(t, entry->m_coll, *obj, stat_state);
-      do_pgmeta_omap_set(t, entry->m_pgid, entry->m_coll, stat_state);
-      do_append_log(t, entry, stat_state);
-
-      c = new C_OnReadable(this);
-    }
-
-queue_tx:
-
-    if (m_do_stats) {
-      Context *tmp = c;
-      c = new C_StatWrapper(stat_state, tmp);
-    }
-
-    m_store->queue_transaction(&(entry->m_osr), std::move(*t), c);
-    delete t;
-
-    inc_in_flight();
-
-    ops_run ++;
-
-  } while (true);
-
-  dout(2) << __func__ << " waiting for "
-	  << m_in_flight.read() << " in-flight transactions" << dendl;
-
+// do we need to wait? join should make sure all the ops are done?
   wait_for_done();
 
+//let us print some stats on what we have done
   do_stats();
 
   dout(0) << __func__ << " finishing" << dendl;
@@ -575,7 +631,13 @@ int main(int argc, const char *argv[])
   g_ceph_context->_conf->apply_changes(NULL);
 
   WorkloadGenerator *wrkldgen_ptr = new WorkloadGenerator(args);
+  // install signal handlers
+  init_async_signal_handler();
+  register_async_signal_handler_oneshot(SIGINT, handle_signal);
+  register_async_signal_handler_oneshot(SIGTERM, handle_signal);
+
   wrkldgen.reset(wrkldgen_ptr);
   wrkldgen->run();
   return 0;
 }
+
