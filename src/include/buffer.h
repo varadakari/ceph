@@ -48,6 +48,7 @@
 #include "page.h"
 #include "crc32c.h"
 #include "buffer_fwd.h"
+#include "include/inline_memory.h"
 
 #ifdef __CEPH__
 # include "include/assert.h"
@@ -435,7 +436,7 @@ namespace buffer CEPH_BUFFER_API {
       unsafe_appender(bufferlist *l, size_t s) : appender(l, s) {}
       unsafe_appender(appender *parent) : appender(parent) {}
       void append(char *p, size_t l) {
-	memcpy(pos, p, l);
+	maybe_inline_memcpy(pos, p, l, 16);
 	pos += l;
       }
       template<typename T>
@@ -453,7 +454,7 @@ namespace buffer CEPH_BUFFER_API {
 	  flush();
 	  prepare_buffer(l);
 	}
-	memcpy(pos, p, l);
+	maybe_inline_memcpy(pos, p, l, 16);
 	pos += l;
       }
       template<typename T>
