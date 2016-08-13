@@ -2272,28 +2272,34 @@ TEST(BufferList, append_zero) {
 TEST(BufferList, appender_bench) {
   unsigned long long ma = 16 * 16, mb = 65536;
   cout << "appending " << 16 * (ma * mb) << " uint64_t's" << std::endl;
+  size_t bufmax = 1048576 * 1024;
+  char *buf = new char[bufmax];
+  uint64_t *p;
+  memset(buf, 0, bufmax);
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
       for (unsigned b = 0; b < mb; ++b) {
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
-	bl.append((char*)&v, sizeof(v));
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
+	bl.append((char*)(p++), sizeof(*p));
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2301,26 +2307,28 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
       for (unsigned b = 0; b < mb; ++b) {
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
-	::encode(v, bl);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
+	::encode(*(p++), bl);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2329,27 +2337,29 @@ TEST(BufferList, appender_bench) {
 
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(v) * mb);
+      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2357,28 +2367,30 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(v) * mb);
+      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	bufferlist::unsafe_appender uap = ap.reserve(sizeof(v) * 16);
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
-	uap.append((char*)&v, sizeof(v));
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	bufferlist::unsafe_appender uap = ap.reserve(sizeof(*p) * 16);
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
+	uap.append((char*)(p++), sizeof(*p));
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2386,27 +2398,29 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(v) * mb);
+      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2414,28 +2428,30 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(v) * mb);
+      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	bufferlist::unsafe_appender uap = ap.reserve(sizeof(v) * 16);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
-	uap.append_v(v);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	bufferlist::unsafe_appender uap = ap.reserve(sizeof(*p) * 16);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
+	uap.append_v(*p++);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2443,27 +2459,29 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(v) * mb);
+      bufferlist::safe_appender ap = bl.get_safe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2472,27 +2490,29 @@ TEST(BufferList, appender_bench) {
 
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(v) * mb);
+      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
-	ap.append((char*)&v, sizeof(v));
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
+	ap.append((char*)(p++), sizeof(*p));
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2500,27 +2520,29 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(v) * mb);
+      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
-	ap.append_v(v);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
+	ap.append_v(*p++);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
@@ -2528,27 +2550,29 @@ TEST(BufferList, appender_bench) {
   }
   {
     utime_t start = ceph_clock_now(NULL);
-    uint64_t v = 123;
     for (unsigned a = 0; a < ma; ++a) {
       bufferlist bl;
-      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(v) * mb);
+      bufferlist::unsafe_appender ap = bl.get_unsafe_appender(16 * sizeof(*p) * mb);
       for (unsigned b = 0; b < mb; ++b) {
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
-	::encode(v, ap);
+	p = (uint64_t*)buf +
+	  (1234567 * a + 45678907 * b) % (bufmax/2/sizeof(uint64_t)) +
+	  123 * a;
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
+	::encode(*(p++), ap);
       }
     }
     utime_t dur = ceph_clock_now(NULL) - start;
