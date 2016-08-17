@@ -413,9 +413,10 @@ namespace buffer CEPH_BUFFER_API {
 
     protected:
       void prepare_buffer(size_t at_least = 0) {
-	bp = buffer::create(std::max(size, at_least));
+	size_t l = std::max(size, at_least);
+	bp = buffer::create(l);
 	pos = bp.c_str();
-	end = pos + bp.length();
+	end = pos + l;
       }
 
       void flush() {
