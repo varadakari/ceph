@@ -43,9 +43,6 @@ using namespace ceph;
  *   ignored when not needed.
  */
 
-// --------------------------------------
-// base types
-
 template<class T>
 inline void encode_raw(const T& t, bufferlist& bl)
 {
@@ -67,11 +64,134 @@ inline void decode_raw(T& t, bufferlist::iterator &p)
   p.copy(sizeof(t), (char*)&t);
 }
 
+/* Advanced encoding
+ *
+ * Recursively calling encode/decode to serialize a compound structure has the
+ * advantage of being pleasantly modular and easy to work with.  However, it
+ * means that we never know how much any particular ::encode call is going to
+ * encode.  Thus, we are forced to use bufferlist in a highly conservative way
+ * causing bounds checks and potentially allocations on every primitive.  This
+ * isn't great, at times, we know statically or at a high level dynamically
+ * (the encoding size of vector<int> isn't know statically, but it *is* known
+ * without examining any actual elements).  Thus, we'd like some additional
+ * static decorators.  Define a type function:
+ */
+template <typename T, typename = void> struct enc_dec_traits {
+  static const bool supported = false;
+  static const bool feature = false;
+  static const bool bounded_size = false;
+  static const size_t max_size = 0;
+};
+/* To enable support for adavanced encoding/decoding for type T,
+ * define enc_dec_traits<T> with supported = true.
+ * feature = true requires features to be passed in for encode/decode.
+ *
+ * Required
+ * size_t estimate(const T &v);
+ * template <typename App> void encode(const T &v, App &app, uint64_t features[=0]);
+ * void decode(const T &v, bufferlist::iterator &bp, uint64_t features[=0]);
+ *
+ * Optional:
+ * static size_t max_size; // must be an upper bound on any encoding
+ */
+
+/* First, define good old encode/decode in terms of enc_dec_traits */
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encode(const type &v, bufferlist &bl, uint64_t features=0) {
+  size_t size = traits::estimate(v);
+  bufferlist::unsafe_appender app(&bl, size);
+  traits::encode(v, app);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && traits::feature>::type
+encode(const type &v, bufferlist &bl, uint64_t features) {
+  size_t size = traits::estimate(v, features);
+  bufferlist::unsafe_appender app(&bl, size);
+  traits::encode(v, app, features);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encode(const type &v, bufferlist::safe_appender &app, uint64_t features=0) {
+  traits::encode(v, app);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && traits::feature>::type
+encode(const type &v, bufferlist::safe_appender &app, uint64_t features) {
+  traits::encode(v, app, features);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encode(const type &v, bufferlist::unsafe_appender &app, uint64_t features=0) {
+  traits::encode(v, app);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && traits::feature>::type
+encode(const type &v, bufferlist::unsafe_appender &app, uint64_t features) {
+  size_t size = traits::estimate(v, features);
+  traits::encode(v, app, features);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+decode(type &v, bufferlist::iterator &bl, uint64_t features=0) {
+  traits::decode(v, bl);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && traits::feature>::type
+decode(type &v, bufferlist::iterator &bl, uint64_t features) {
+  traits::decode(v, bl, features);
+}
+
+#if 0
+/* Next, define the new-style encdec */
+template<typename type, typename app, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encdec(type &v, app &a, uint64_t features=0) {
+  traits::encode(v, a);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encdec<type, bufferlist::iterator, traits>(
+  type &v, bufferlist::iterator &bl, uint64_t features=0) {
+  traits::decode(v, bl);
+}
+
+template<typename type, typename traits=enc_dec_traits<type> >
+inline typename std::enable_if<traits::supported && !traits::feature>::type
+encdec<type, size_t &cnt, traits>(
+  type &v, size_t, uint64_t features=0) {
+  cnt += traits::estimate(v, features);
+}
+#endif
+
+// --------------------------------------
+// base types
+
 #define WRITE_RAW_ENCODER(type)						\
-  inline void encode(const type &v, bufferlist& bl, uint64_t features=0) { encode_raw(v, bl); } \
-  inline void encode(const type &v, bufferlist::safe_appender& ap, uint64_t features=0) { encode_raw(v, ap); } \
-  inline void encode(const type &v, bufferlist::unsafe_appender& ap, uint64_t features=0) { encode_raw(v, ap); } \
-  inline void decode(type &v, bufferlist::iterator& p) { __ASSERT_FUNCTION decode_raw(v, p); }
+  template<>                                                            \
+  struct enc_dec_traits<type> {                                         \
+    static const bool supported = true;                                 \
+    static const bool feature = false;                                  \
+    static const bool bounded_size = true;                              \
+    static const size_t max_size = sizeof(type);                        \
+    template <typename App> static void encode(                         \
+      const type &v, App &app, uint64_t features = 0) {                 \
+      encode_raw(v, app);                                               \
+    }                                                                   \
+    static void decode(                                                 \
+      type &v, bufferlist::iterator &bl, uint64_t features = 0) {       \
+      decode_raw(v, bl);                                                \
+    }                                                                   \
+    static size_t estimate(const type &v) { return max_size; }          \
+  };                                                                    \
 
 WRITE_RAW_ENCODER(__u8)
 #ifndef _CHAR_IS_SIGNED
@@ -101,26 +221,26 @@ inline void decode(bool &v, bufferlist::iterator& p) {
 // int types
 
 #define WRITE_INTTYPE_ENCODER(type, etype)				\
-  inline void encode(type v, bufferlist& bl, uint64_t features=0) {	\
-    ceph_##etype e;					                \
-    e = v;                                                              \
-    encode_raw(e, bl);							\
-  }									\
-  inline void encode(type v, bufferlist::safe_appender& ap, uint64_t features=0) {	\
-    ceph_##etype e;					                \
-    e = v;                                                              \
-    encode_raw(e, ap);							\
-  }									\
-  inline void encode(type v, bufferlist::unsafe_appender& ap, uint64_t features=0) {	\
-    ceph_##etype e;					                \
-    e = v;                                                              \
-    encode_raw(e, ap);							\
-  }									\
-  inline void decode(type &v, bufferlist::iterator& p) {		\
-    ceph_##etype e;							\
-    decode_raw(e, p);							\
-    v = e;								\
-  }
+  template<>                                                            \
+  struct enc_dec_traits<type> {                                         \
+    static const bool supported = true;                                 \
+    static const bool feature = false;                                  \
+    static const bool bounded_size = true;                              \
+    static const size_t max_size = sizeof(ceph_##etype);                \
+    template <typename App> static void encode(                         \
+      const type &v, App &app, uint64_t features = 0) {                 \
+      ceph_##etype e;                                                   \
+      e = v;                                                            \
+      encode_raw(e, app);                                               \
+    }                                                                   \
+    static void decode(                                                 \
+      type &v, bufferlist::iterator &bl, uint64_t features = 0) {       \
+      ceph_##etype e;                                                   \
+      decode_raw(e, bl);                                                \
+      v = e;                                                            \
+    }                                                                   \
+    static size_t estimate(const type &v) { return max_size; }          \
+  };                                                                    \
 
 WRITE_INTTYPE_ENCODER(uint64_t, le64)
 WRITE_INTTYPE_ENCODER(int64_t, le64)
@@ -372,24 +492,106 @@ inline void decode(boost::tuple<A, B, C> &t, bufferlist::iterator &bp)
 }
 
 // pair
+
+/* Restrict the basic encode/decode definitions to pairs where 
+ * either type lacks an enc_dec_traits specialization */
 template<class A, class B>
-inline void encode(const std::pair<A,B> &p, bufferlist &bl, uint64_t features)
+inline
+typename std::enable_if<
+  !enc_dec_traits<A>::supported ||
+  !enc_dec_traits<B>::supported>::type
+encode(const std::pair<A,B> &p, bufferlist &bl, uint64_t features)
 {
   encode(p.first, bl, features);
   encode(p.second, bl, features);
 }
 template<class A, class B>
-inline void encode(const std::pair<A,B> &p, bufferlist &bl)
+inline
+typename std::enable_if<
+  !enc_dec_traits<A>::supported ||
+  !enc_dec_traits<B>::supported>::type
+encode(const std::pair<A,B> &p, bufferlist &bl)
 {
   encode(p.first, bl);
   encode(p.second, bl);
 }
 template<class A, class B>
-inline void decode(std::pair<A,B> &pa, bufferlist::iterator &p)
+inline
+typename std::enable_if<
+  !enc_dec_traits<A>::supported ||
+  !enc_dec_traits<B>::supported>::type
+decode(std::pair<A,B> &pa, bufferlist::iterator &p)
 {
   decode(pa.first, p);
   decode(pa.second, p);
 }
+
+/* To support types with advanced encoding, if both support enc_dec_traits,
+ * we specialize an instance of enc_dec_traits (feature if either requires
+ * it) */
+template<typename A, typename B>
+struct enc_dec_traits<
+  std::pair<A, B>,
+  typename std::enable_if<
+    enc_dec_traits<A>::supported && enc_dec_traits<B>::supported &&
+    (enc_dec_traits<A>::feature || enc_dec_traits<B>::feature)
+  >::type> {
+  const static bool supported = true;
+  const static bool feature = true;
+  const static bool bounded_size =
+    enc_dec_traits<A>::bounded_size && enc_dec_traits<B>::bounded_size;
+  const static size_t max_size =
+    enc_dec_traits<A>::max_size + enc_dec_traits<B>::max_size;
+
+  static size_t estimate(
+    const std::pair<A, B> &v, uint64_t features) {
+    return enc_dec_traits<A>::estimate(v.first, features) +
+      enc_dec_traits<B>::estimate(v.second, features);
+  }
+
+  template <typename App> static void encode(
+    const std::pair<A, B> &v, App &app, uint64_t features) {
+    enc_dec_traits<A>::encode(v.first, app);
+    enc_dec_traits<B>::encode(v.second, app);
+  }
+  static void decode(
+    std::pair<A, B> &v, bufferlist::iterator &bl, uint64_t features) {
+    enc_dec_traits<A>::decode(v.first, bl);
+    enc_dec_traits<B>::decode(v.second, bl);
+  }
+};
+
+template<typename A, typename B>
+struct enc_dec_traits<
+  std::pair<A, B>,
+  typename std::enable_if<
+    enc_dec_traits<A>::supported && enc_dec_traits<B>::supported &&
+    !enc_dec_traits<A>::feature && !enc_dec_traits<B>::feature
+  >::type> {
+  const static bool supported = true;
+  const static bool feature = false;
+  const static bool bounded_size =
+    enc_dec_traits<A>::bounded_size && enc_dec_traits<B>::bounded_size;
+  const static size_t max_size =
+    enc_dec_traits<A>::max_size + enc_dec_traits<B>::max_size;
+
+  static size_t estimate(
+    const std::pair<A, B> &v, uint64_t features = 0) {
+    return enc_dec_traits<A>::estimate(v.first) +
+      enc_dec_traits<B>::estimate(v.second);
+  }
+
+  template <typename App> static void encode(
+    const std::pair<A, B> &v, App &app, uint64_t features = 0) {
+    enc_dec_traits<A>::encode(v.first, app);
+    enc_dec_traits<B>::encode(v.second, app);
+  }
+  static void decode(
+    std::pair<A, B> &v, bufferlist::iterator &bl, uint64_t features = 0) {
+    enc_dec_traits<A>::decode(v.first, bl);
+    enc_dec_traits<B>::decode(v.second, bl);
+  }
+};
 
 // list
 template<class T>

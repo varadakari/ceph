@@ -81,6 +81,7 @@ typedef int32_t fs_cluster_id_t;
 
 
 BOOST_STRONG_TYPEDEF(uint64_t, mds_gid_t)
+WRITE_INTTYPE_ENCODER(mds_gid_t, le64)
 extern const mds_gid_t MDS_GID_NONE;
 constexpr fs_cluster_id_t FS_CLUSTER_ID_NONE = {-1};
 // The namespace ID of the anonymous default filesystem from legacy systems

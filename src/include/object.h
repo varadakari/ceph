@@ -119,8 +119,8 @@ struct snapid_t {
   operator uint64_t() const { return val; }  
 };
 
-inline void encode(snapid_t i, bufferlist &bl) { encode(i.val, bl); }
-inline void decode(snapid_t &i, bufferlist::iterator &p) { decode(i.val, p); }
+inline void encode(snapid_t i, bufferlist &bl, uint64_t features = 0) { encode(i.val, bl); }
+inline void decode(snapid_t &i, bufferlist::iterator &p, uint64_t features = 0) { decode(i.val, p); }
 
 inline ostream& operator<<(ostream& out, snapid_t s) {
   if (s == CEPH_NOSNAP)
