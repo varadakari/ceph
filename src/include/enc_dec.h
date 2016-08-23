@@ -176,6 +176,7 @@ template<> struct enc_dec_traits<ceph::buffer::ptr> { enum { is_bounded_size = f
 inline size_t enc_dec(size_t p,ceph::buffer::ptr& s) { return p + sizeof(size_t) + s.length(); }
 inline char * enc_dec(char * p,ceph::buffer::ptr& s) { *(size_t *)p = s.length(); memcpy(p+sizeof(size_t),s.c_str(),s.length()); return p + sizeof(size_t) + s.length(); }
 inline const char *enc_dec(const char *p,ceph::buffer::ptr& s) { s = ceph::buffer::ptr(p + sizeof(size_t),*(size_t *)p); return p + sizeof(size_t) + s.length(); }
+
 //
 // unsigned VarInt
 //
@@ -473,6 +474,23 @@ inline const char *enc_dec_pair(const char *p,f& first,s& second) {
    p = enc_dec(p,first);
    p = enc_dec(p,second);
    return p;
+}
+
+// unused
+
+inline size_t enc_dec(size_t p, std::bitset<16>& s) { return p + sizeof(size_t) + s.size(); }
+
+inline char* enc_dec(char* p, std::bitset<16>& s) {
+  uint16_t val = uint16_t(s.to_ullong());
+  p = enc_dec_varint(p, val);
+  return p;
+}
+
+inline const char* enc_dec(const char* p, std::bitset<16>& s) {
+  uint16_t val;
+  p = enc_dec_varint(p, val);
+  s = std::bitset<16>(val);
+  return p;
 }
 
 //

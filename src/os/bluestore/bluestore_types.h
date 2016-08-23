@@ -323,7 +323,7 @@ struct bluestore_blob_t {
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
 
   DECLARE_ENC_DEC_MEMBER_FUNCTION() {
-    p = enc_dec(p, extents);
+    //p = enc_dec(p, extents);
     p = enc_dec_varint(p, flags);
     if (is_compressed()) {
       p = enc_dec_varint_lowz(p, compressed_length_orig);
@@ -338,8 +338,7 @@ struct bluestore_blob_t {
       p = enc_dec(p, ref_map);
     }
     if (has_unused()) {
-      uint64_t uns = unused.to_ullong();
-      p = enc_dec_varint(p, uns);
+      p = enc_dec(p, unused);
     }
     return p;
   }
@@ -623,6 +622,11 @@ typedef int64_t bluestore_blob_id_t;
 
 /// lextent: logical data block back by the extent
 struct bluestore_lextent_t {
+  // From LSB to MSB
+  // 1. offset is not present in lextent or starts with a zero
+  // 2. lextent lenght is same as blob length
+  // 3. blob has multiple pextent vector
+  uint8_t opt_byte;
   bluestore_blob_id_t blob;  ///< blob
   uint32_t offset;           ///< relative offset within the blob
   uint32_t length;           ///< length within the blob

@@ -1179,18 +1179,45 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
    map<int, int> old_new; // key is "old" blob_id, value is 'new' blob_id;
 
    onode_blob_map_context(BlueStore::BlobMap& _map):blob_map(_map) { }
+   void setbit_location(uint8_t &n, int pos){
+     n |= 1 << pos;
+   }
 
-   virtual size_t  operator() (size_t p, uint64_t& off, bluestore_lextent_t& le)
+   void clearbit_location(uint8_t &n, int pos){
+     n &= ~(1 << pos);
+   }
+
+   bool is_set(uint8_t &n, int pos){
+     return n & (1 << pos);
+   }
+
+   virtual size_t operator() (size_t p, uint64_t& off, bluestore_lextent_t& le)
    {
       return  enc_dec_pair(p,off,le); // need blob + lextent encoding estimate
    }
 
    virtual char* operator() (char *p, uint64_t& off, bluestore_lextent_t &le)
    {
+      // From LSB to MSB
+      //  1. offset is not present in lextent or starts with a zero
+      //  2. blob has single pextent vector
+      //  3. lextent length is same as blob length
+      //
+     uint8_t optimize = 0;
+     if (le.offset == 0) {
+       //set the LSB bit to indicate offset starts from 0
+       setbit_location(optimize, 0);
+     }
+     p = enc_dec(p, optimize);
      uint64_t offset = off-pos;
      pos = off;
      p = enc_dec_varint_lowz(p, offset);
-     p = enc_dec(p, le);
+     if (le.offset == 0) {
+       p = enc_dec_varint(p, le.blob);
+       p = enc_dec_varint_lowz(p, le.length);
+     } else {
+       p = enc_dec(p, le);
+     }
      int b = le.blob;
      if (b < 0) { // global blob id, serialize after the lextent serialization
      } else if (old_new.find(b) == old_new.end()) { // New blob, serialize along with lextent
@@ -1198,6 +1225,25 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
        p = enc_dec_varint(p, new_blob_id);
        p = enc_dec(p, blob->blob);
        old_new[le.blob] = new_blob_id++;
+       // we have to serialize the pextents separately
+       // if it has a single extent, encode the extent not going through vector
+       // if it has single extent and length is same as lextent length don't
+       // encode, else go through vector context
+       if (blob->blob.extents.size() == 1) {
+          setbit_location(optimize, 1);
+	  p = enc_dec_lba(p, blob->blob.extents.front().offset);
+	  if (blob->blob.extents.front().length == le.length) {
+             setbit_location(optimize, 2);
+	  } else {
+	    p = enc_dec_varint_lowz(p, blob->blob.extents.front().length);
+	  }
+       } else {
+	 p = enc_dec(p, blob->blob.extents);
+       }
+       // we have to serialize the pextents separately
+       // if it has a single extent, encode the extent not going through vector
+       // if it has single extent and length is same as lextent length don't
+       // encode, else go through vector context
      } else { // already serialized, let us remember the id
        auto old_blob_id = old_new.find(b);
        int blob_id = old_blob_id->first;
@@ -1208,11 +1254,21 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
 
    virtual const char* operator() (const char *p,uint64_t &off, bluestore_lextent_t& le)
    {
+     uint8_t optimize = 0;
+     p = enc_dec(p, optimize);
+     bool off_zero =  is_set(optimize, 0);
      int b;
      uint64_t delta;
      p = enc_dec_varint_lowz(p, delta);
      pos += delta;
      off = pos;
+     if (off_zero) {
+       p = enc_dec_varint(p, le.blob);
+       p = enc_dec_varint_lowz(p, le.length);
+       le.offset = 0;
+     } else {
+       p = enc_dec(p, le);
+     }
      p = enc_dec(p, le);
      p = enc_dec_varint(p, b);
      if (b < 0) {
@@ -1222,6 +1278,16 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
        //BlueStore::Blob* blob = new BlueStore::Blob;
        bluestore_blob_t blob;
        p = enc_dec(p, blob);
+       if (is_set(optimize, 1)) {
+	 bluestore_pextent_t pe;
+	 p = enc_dec_lba(p, pe.offset);
+	 if (!is_set(optimize, 2)) {
+	   p = enc_dec_varint_lowz(p, pe.length);
+	 }
+	 blob.extents.emplace_back(pe);
+       } else {
+	 p = enc_dec(p, blob.extents);
+       }
        old_new[b] = new_blob_id++;
        BlueStore::Blob* b = new BlueStore::Blob(le.blob, NULL);
        b->blob = blob;
@@ -1236,8 +1302,13 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
 
 struct blob_map_context  : public enc_dec_map_context<int, bluestore_blob_t> {
    map<int, int> old_new; // key is "old" blob_id, value is 'new' blob_id;
+   uint8_t optimize;
 
-   blob_map_context(map<int,int>& _map):old_new(_map) { }
+   blob_map_context(map<int,int>& _map):old_new(_map), optimize(0) { }
+
+   bool is_set(uint8_t &n, int pos){
+     return n & (1 << pos);
+   }
 
    virtual size_t  operator() (size_t p, int& id, bluestore_blob_t& blob)
    {
@@ -1246,10 +1317,7 @@ struct blob_map_context  : public enc_dec_map_context<int, bluestore_blob_t> {
 
    virtual char* operator() (char *p, int& id, bluestore_blob_t &blob)
    {
-     if (id < 0) { // global blob id, serialize after the lextent serialization
-       p = enc_dec_varint(p, id);
-       p = enc_dec(p, blob);
-     } else if (old_new.find(id) == old_new.end()) { // New blob, serialize
+     if ((id < 0) || (old_new.find(id) == old_new.end())) { // global blob id or not serialized before
        p = enc_dec_varint(p, id);
        p = enc_dec(p, blob);
      } else { // already serialized, let us remember the id
@@ -1299,7 +1367,7 @@ void BlueStore::onode_blob_encode(OnodeRef o)
   }
   dout(0) << __func__ << o->oid << " encoded size : " << (int)(end-buffer) << dendl;
   *(__le32*)buffer= __le32(end-data_start);
-  size_t act_size = (__le32 )(end-data_start);
+  //size_t act_size = (__le32 )(end-data_start);
   //dout(0) << __func__ << " actual size: " << act_size << dendl;
   //TODO:: use pop back to release the unsed buffer back, but that seems broken now
   // we are consuming more than actual encoding now, have to debug the size
@@ -5180,8 +5248,8 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
   for (set<OnodeRef>::iterator p = txc->onodes.begin();
        p != txc->onodes.end();
        ++p) {
-    //_dump_onode_ondisk((*p)->onode, 0);
-    if ((*p)->blob_map.blob_map.size() == 512)
+    if ((*p)->blob_map.blob_map.size() == 1024)
+       _dump_onode_ondisk((*p)->onode, 0);
        _dump_blob_map((*p)->blob_map, 0);
   }
 #endif
