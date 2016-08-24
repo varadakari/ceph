@@ -521,9 +521,9 @@ generate_dummy_onode(bluestore_onode_t& onode)
   char *snapset = gen_buffer(31);
   onode.attrs["snapset"] = bufferptr(snapset, 31);
   uint64_t offset = 0;
-  for (int i = 1; i <= 512; i++) {
-    onode.extent_map[offset] =  bluestore_lextent_t(i, 0, 8192);
-    offset += 8192;
+  for (int i = 1; i <= 1024; i++) {
+    onode.extent_map[offset] =  bluestore_lextent_t(i, 0, 4096);
+    offset += 4096;
   }
   onode.omap_head = 12;
   onode.expected_object_size = 4194304;
@@ -550,13 +550,13 @@ void
 generate_dummy_blob_map(BlueStore::BlobMap& map)
 {
   uint64_t offset = 0xf114a5000;
-  for (int i = 1; i <= 512; i++) {
+  for (int i = 1; i <= 1024; i++) {
     BlueStore::Blob *b = new BlueStore::Blob();
-    b->blob.init_csum(bluestore_blob_t::CSUM_CRC32C, 12, 8192);
+    b->blob.init_csum(bluestore_blob_t::CSUM_CRC32C, 12, 4096);
     b->blob.csum_data = buffer::claim_malloc(8, strdup("abcdefgh"));
     b->blob.extents.emplace_back(bluestore_pextent_t(offset, 0x2000));
     b->blob.set_flag(bluestore_blob_t::FLAG_MUTABLE|bluestore_blob_t::FLAG_CSUM);
-    offset += 8192;
+    offset += 4096;
     map.claim(b);
   }
 }
@@ -715,6 +715,279 @@ TEST(test_enc_dec, blob_map) {
   char *p = enc_dec(buf, bmap);
   std::cout<< " Blob map encoded length: " << int(p-buf) << std::endl;
   bufferlist bl;
+  bmap.encode(bl);
+  std::cout << "blob map encoded length(default):" << bl.length() << std::endl;
+}
+
+struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_lextent_t> {
+   BlueStore::BlobMap& blob_map;
+   BlueStore::BlobMap temp_blob_map;
+   int new_blob_id = 1;
+   uint64_t pos = 0;
+   map<int, int> old_new; // key is "old" blob_id, value is 'new' blob_id;
+   uint8_t csum_type = -1;
+   uint8_t csum_chunk_order = -1;
+   uint32_t le_length = 0;
+
+   onode_blob_map_context(BlueStore::BlobMap& _map):blob_map(_map) { }
+   void setbit_location(uint8_t &n, int pos){
+     n |= 1 << pos;
+   }
+
+   void clearbit_location(uint8_t &n, int pos){
+     n &= ~(1 << pos);
+   }
+
+   bool is_set(uint8_t &n, int pos){
+     return n & (1 << pos);
+   }
+
+   virtual size_t operator() (size_t p, uint64_t& off, bluestore_lextent_t& le)
+   {
+      return  enc_dec_pair(p,off,le); // need blob + lextent encoding estimate
+   }
+
+   virtual char* operator() (char *p, uint64_t& off, bluestore_lextent_t &le)
+   {
+      // From LSB to MSB
+      //  1. offset is not present in lextent or starts with a zero
+      //  2. blob has single pextent vector
+      //  3. lextent length is same as blob length
+      //  4. csum_type is same as previous one
+      //  5. csum_order is same as previous one
+      //  6. lextent length is same as previous one
+     uint8_t optimize = 0;
+     if (le.offset == 0) {
+       //set the LSB bit to indicate offset starts from 0
+       setbit_location(optimize, 0);
+     }
+     p = enc_dec(p, optimize);
+     uint64_t offset = off-pos;
+     pos = off;
+     p = enc_dec_varint_lowz(p, offset);
+     if (le.offset == 0) {
+       p = enc_dec_varint(p, le.blob);
+       if (le_length == le.length) {
+         setbit_location(optimize, 5);
+       } else {
+         p = enc_dec_varint_lowz(p, le.length);
+       }
+     } else {
+       p = enc_dec(p, le);
+     }
+     le_length = le.length;
+     int b = le.blob;
+     if (b < 0) { // global blob id, serialize after the lextent serialization
+     } else if (old_new.find(b) == old_new.end()) { // New blob, serialize along with lextent
+       BlueStore::BlobRef blob = blob_map.get(b);
+       p = enc_dec_varint(p, new_blob_id);
+       p = enc_dec(p, blob->blob);
+       old_new[le.blob] = new_blob_id++;
+       // we have to serialize the pextents separately
+       // if it has a single extent, encode the extent not going through vector
+       // if it has single extent and length is same as lextent length don't
+       // encode, else go through vector context
+       if (blob->blob.extents.size() == 1) {
+          setbit_location(optimize, 1);
+	  p = enc_dec_lba(p, blob->blob.extents.front().offset);
+	  if (blob->blob.extents.front().length == le.length) {
+             setbit_location(optimize, 2);
+	  } else {
+	    p = enc_dec_varint_lowz(p, blob->blob.extents.front().length);
+	  }
+       } else {
+	 p = enc_dec(p, blob->blob.extents);
+       }
+       if (blob->blob.has_csum()) {
+          // handle csum_type
+          if (blob->blob.csum_type == csum_type) {
+             setbit_location(optimize, 3);
+          } else {
+             p = enc_dec(p, blob->blob.csum_type);
+          }
+
+         //handle csum_order
+          if (blob->blob.csum_chunk_order == csum_chunk_order) {
+             setbit_location(optimize, 4);
+          } else {
+             p = enc_dec(p, blob->blob.csum_chunk_order);
+         }
+
+          p = enc_dec(p, blob->blob.csum_data);
+       }
+
+       // store the previous blob attrs
+       csum_type = blob->blob.csum_type;
+       csum_chunk_order = blob->blob.csum_chunk_order;
+
+
+     } else { // already serialized, let us remember the id
+       auto old_blob_id = old_new.find(b);
+       int blob_id = old_blob_id->first;
+       p = enc_dec_varint(p, blob_id);
+     }
+     return p;
+   }
+
+   virtual const char* operator() (const char *p,uint64_t &off, bluestore_lextent_t& le)
+   {
+     uint8_t optimize = 0;
+     p = enc_dec(p, optimize);
+     bool off_zero =  is_set(optimize, 0);
+     int b;
+     uint64_t delta;
+     p = enc_dec_varint_lowz(p, delta);
+     pos += delta;
+     off = pos;
+     if (off_zero) {
+       p = enc_dec_varint(p, le.blob);
+       p = enc_dec_varint_lowz(p, le.length);
+       le.offset = 0;
+     } else {
+       p = enc_dec(p, le);
+     }
+     p = enc_dec(p, le);
+     p = enc_dec_varint(p, b);
+     if (b < 0) {
+       //nothing to do , we will deserialize  actual blob later
+     } else if (old_new.find(b) == old_new.end()) {
+       // blob id has to be retained
+       //BlueStore::Blob* blob = new BlueStore::Blob;
+       bluestore_blob_t blob;
+       p = enc_dec(p, blob);
+       if (is_set(optimize, 1)) {
+	 bluestore_pextent_t pe;
+	 p = enc_dec_lba(p, pe.offset);
+	 if (!is_set(optimize, 2)) {
+	   p = enc_dec_varint_lowz(p, pe.length);
+	 }
+	 blob.extents.emplace_back(pe);
+       } else {
+	 p = enc_dec(p, blob.extents);
+       }
+       old_new[b] = new_blob_id++;
+       BlueStore::Blob* b = new BlueStore::Blob(le.blob, NULL);
+       b->blob = blob;
+       // is this a memory leak here? need to handle
+       blob_map.blob_map.insert(*b);
+     } else {
+      assert(old_new.find(b) != old_new.end());
+     }
+     return p;
+   }
+};
+
+void onode_blob_encode(bluestore_onode_t& o, BlueStore::BlobMap& bmap)
+{
+  bufferlist bl;
+  onode_blob_map_context t(bmap);
+  size_t sz = enc_dec(size_t(0), o);
+  sz += enc_dec(size_t(0), o.extent_map, t);
+  sz += enc_dec(size_t(0), bmap);
+  std::cout << __func__ << o.nid << " estimated size: " << sz << std::endl;
+  char *buffer = new char[sz];
+  char *data_start = buffer + sizeof(__le32);
+  char *end = enc_dec(data_start, o);
+  std::cout << __func__ << " encoded size of onode: " << (int)(end-data_start) << std::endl;
+  end = enc_dec(end, o.extent_map, t);
+  std::cout << __func__ << " encoded size of onode_blob_map: " << (int)(end-buffer) << std::endl;
+  //TODO:: can we optimize this? ideally we shouldn't have any blobs other
+  //than onode space ones. Is there anything missing?
+  if (bmap.blob_map.size() > t.old_new.size()) {
+    BlueStore::BlobMap temp_blob_map; // key is "old" blob_id, value is 'new' blob_id;
+    for (auto& p : bmap.blob_map) {
+      if(t.old_new.find(p.id) == t.old_new.end()) {
+	temp_blob_map.blob_map.insert(p);
+      }
+    }
+    end = enc_dec(end, temp_blob_map);
+  } else {
+    uint16_t sz = bmap.blob_map.size() - t.old_new.size();
+    end = enc_dec(end, sz);
+  }
+  std::cout << __func__ << o.nid << " encoded size : " << (int)(end-buffer) << std::endl;
+  *(__le32*)buffer= __le32(end-data_start);
+  //size_t act_size = (__le32 )(end-data_start);
+  //std::cout << __func__ << " actual size: " << act_size << std::endl;
+  //TODO:: use pop back to release the unsed buffer back, but that seems broken now
+  // we are consuming more than actual encoding now, have to debug the size
+  //bufferptr bp = buffer::claim_char(sz, buffer);
+  //bl.push_back(bp);
+  //std::cout << __func__ << "bufferlist size: " << bl.length() << std::endl;
+
+  // TODO:: Take this to mainsteam code
+  // testing decode
+  //onode_blob_decode(bl);
+  //bl.clear();
+  delete []buffer;
+}
+
+void dump_blob_map_decode(BlueStore::BlobMap &bm)
+{
+  for (auto& b : bm.blob_map) {
+    std::cout << __func__ << "  " << b << std::endl;
+    if (b.blob.has_csum()) {
+      vector<uint64_t> v;
+      unsigned n = b.blob.get_csum_count();
+      for (unsigned i = 0; i < n; ++i)
+	v.push_back(b.blob.get_csum_item(i));
+      std::cout << __func__ << "       csum: " << std::hex << v << std::dec
+		      << std::endl;
+    }
+  }
+}
+
+void onode_blob_decode(bufferlist& bl)
+{
+  bufferlist::iterator i = bl.begin();
+  unique_ptr<char> buf0;
+  unique_ptr<char> buf1; // Incase we have to allocate a buffer
+  bluestore_onode_t o2;
+  map<uint64_t, bluestore_lextent_t> le_map;
+  BlueStore::BlobMap map2, map3;
+  //
+  // Read the sentinal
+  //
+  const char *dec_buf_start = straighten_iterator(i,sizeof(__le32),buf0);
+  size_t buf_sz = *(__le32 *)dec_buf_start;
+  //
+  // Now the data itself
+  //
+  const char *dec_data_start  = straighten_iterator(i,buf_sz,buf1);
+  //std::cout << __func__ << "decode actual size: " << buf_sz << std::endl;
+  onode_blob_map_context t2(map2);
+  const char *dec_end = enc_dec((const char *)dec_data_start, o2);
+  dec_end = enc_dec((const char *)dec_end, le_map, t2);
+  __le16 map_size;
+  dec_end = enc_dec((const char *)dec_end, map_size);
+  //std::cout << __func__ << "Decoded map size: " << map_size << std::endl;
+  if (map_size > 0) {
+    dec_end -= sizeof(__le16);
+    dec_end = enc_dec((const char *)dec_end, map3);
+  }
+  std::cout << __func__ << " Decoded size: " << (int) (dec_end - dec_data_start) << std::endl;
+  //dump_onode_ondisk(o2);
+  o2.extent_map = le_map;
+  //dump_onode_ondisk(o2);
+  //dump_blob_map_decode(t2.blob_map);
+  //for (auto& p : le_map) {
+   // std::cout << __func__ << "  lextent 0x" << std::hex << p.first
+     //               << std::dec << ": " << p.second
+     //               << std::endl;
+  //}
+  //dump_blob_map_decode(map3, 0);
+}
+
+TEST(test_enc_dec, onode_blob_map) {
+  bluestore_onode_t onode;
+  generate_dummy_onode(onode);
+  //bluestore_onode_t o2;
+  BlueStore::BlobMap bmap;
+  generate_dummy_blob_map(bmap);
+  onode_blob_encode(onode, bmap);
+  bufferlist bl;
+  onode.encode(bl);
+  std::cout << "onode encoded length(default):" << bl.length() << std::endl;
   bmap.encode(bl);
   std::cout << "blob map encoded length(default):" << bl.length() << std::endl;
 }

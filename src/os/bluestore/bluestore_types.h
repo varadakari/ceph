@@ -329,11 +329,13 @@ struct bluestore_blob_t {
       p = enc_dec_varint_lowz(p, compressed_length_orig);
       p = enc_dec_varint_lowz(p, compressed_length);
     }
+#if 0
     if (has_csum()) {
       p = enc_dec(p, csum_type);
       p = enc_dec(p, csum_chunk_order);
       p = enc_dec(p, csum_data);
     }
+#endif
     if (has_refmap()) {
       p = enc_dec(p, ref_map);
     }
