@@ -29,6 +29,8 @@
 using std::chrono::seconds;
 
 
+const uint64_t JournalStream::sentinel = 0x3141592653589793;
+
 void Journaler::set_readonly()
 {
   lock_guard l(lock);

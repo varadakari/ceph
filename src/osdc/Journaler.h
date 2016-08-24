@@ -116,7 +116,7 @@ class JournalStream
 
   // A magic number for the start of journal entries, so that we can
   // identify them in damaged journals.
-  static const uint64_t sentinel = 0x3141592653589793;
+  static const uint64_t sentinel;
 };
 
 
