@@ -1175,10 +1175,13 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
    BlueStore::BlobMap& blob_map;
    BlueStore::BlobMap temp_blob_map;
    int new_blob_id = 1;
+   //uint8_t csum_chunk_order = -1;
+   //uint8_t csum_type = -1;
    uint64_t pos = 0;
    map<int, int> old_new; // key is "old" blob_id, value is 'new' blob_id;
 
    onode_blob_map_context(BlueStore::BlobMap& _map):blob_map(_map) { }
+
    void setbit_location(uint8_t &n, int pos){
      n |= 1 << pos;
    }
@@ -1202,7 +1205,8 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
       //  1. offset is not present in lextent or starts with a zero
       //  2. blob has single pextent vector
       //  3. lextent length is same as blob length
-      //
+      //  4. csum_type is same as previous one
+      //  5. csum_order is same as previous one
      uint8_t optimize = 0;
      if (le.offset == 0) {
        //set the LSB bit to indicate offset starts from 0
@@ -1219,7 +1223,8 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
        p = enc_dec(p, le);
      }
      int b = le.blob;
-     if (b < 0) { // global blob id, serialize after the lextent serialization
+     if (b < 0) {
+       // global blob id, serialize after the lextent serialization
      } else if (old_new.find(b) == old_new.end()) { // New blob, serialize along with lextent
        BlueStore::BlobRef blob = blob_map.get(b);
        p = enc_dec_varint(p, new_blob_id);
@@ -1240,10 +1245,31 @@ struct onode_blob_map_context  : public enc_dec_map_context<uint64_t,bluestore_l
        } else {
 	 p = enc_dec(p, blob->blob.extents);
        }
-       // we have to serialize the pextents separately
-       // if it has a single extent, encode the extent not going through vector
-       // if it has single extent and length is same as lextent length don't
-       // encode, else go through vector context
+
+#if 0
+       if (blob->blob.has_csum()) {
+          // handle csum_type
+          if (blob->blob.csum_type == csum_type) {
+             setbit_location(optimize, 3);
+          } else {
+             p = enc_dec(p, blob->blob.csum_type);
+          }
+
+	  //handle csum_order
+          if (blob->blob.csum_chunk_order == csum_chunk_order) {
+             setbit_location(optimize, 4);
+          } else {
+             p = enc_dec(p, blob->blob.csum_chunk_order);
+	  }
+
+          p = enc_dec(p, blob->blob.csum_data);
+       }
+
+       // store the previous blob attrs
+	csum_type = blob->blob.csum_type;
+	csum_chunk_order = blob->blob.csum_chunk_order;
+#endif
+
      } else { // already serialized, let us remember the id
        auto old_blob_id = old_new.find(b);
        int blob_id = old_blob_id->first;
