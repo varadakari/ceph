@@ -20,6 +20,8 @@
 #include "common/ceph_argparse.h"
 #include "global/global_context.h"
 #include "gtest/gtest.h"
+#include "os/bluestore/bluestore_types.h"
+#include "os/bluestore/BlueStore.h"
 #include "include/enc_dec.h"
 
 
@@ -499,6 +501,222 @@ TEST(test_enc_dec, varint_lowz) {
       ASSERT_EQ(x, u);
     }
   }
+}
+
+char* gen_buffer(uint64_t size)
+{
+  char *buffer = new char[size];
+  boost::random::random_device rand;
+  rand.generate(buffer, buffer + size);
+  return buffer;
+}
+
+void
+generate_dummy_onode(bluestore_onode_t& onode)
+{
+  onode.nid = 1252;
+  onode.size = 4194304;
+  char *buf = gen_buffer(293);
+  onode.attrs["-"] = bufferptr(buf, 293);
+  char *snapset = gen_buffer(31);
+  onode.attrs["snapset"] = bufferptr(snapset, 31);
+  uint64_t offset = 0;
+  for (int i = 1; i <= 512; i++) {
+    onode.extent_map[offset] =  bluestore_lextent_t(i, 0, 8192);
+    offset += 8192;
+  }
+  onode.omap_head = 12;
+  onode.expected_object_size = 4194304;
+  onode.expected_write_size = 4194304;
+  onode.alloc_hint_flags = 100;
+}
+
+void
+generate_dummy_blob(bluestore_blob_t& blob)
+{
+  blob.init_csum(bluestore_blob_t::CSUM_XXHASH32, 16, 65536);
+  char *buf = gen_buffer(8);
+  blob.csum_data = buffer::claim_char(8, buf);
+  blob.ref_map.get(3, 5);
+  blob.add_unused(0, 3, 4096);
+  blob.add_unused(8, 8, 4096);
+  blob.extents.emplace_back(bluestore_pextent_t(0x40100000, 0x10000));
+  blob.extents.emplace_back(
+    bluestore_pextent_t(bluestore_pextent_t::INVALID_OFFSET, 0x1000));
+  blob.extents.emplace_back(bluestore_pextent_t(0x40120000, 0x10000));
+}
+
+void
+generate_dummy_blob_map(BlueStore::BlobMap& map)
+{
+  uint64_t offset = 0xf114a5000;
+  for (int i = 1; i <= 512; i++) {
+    BlueStore::Blob *b = new BlueStore::Blob();
+    b->blob.init_csum(bluestore_blob_t::CSUM_CRC32C, 12, 8192);
+    b->blob.csum_data = buffer::claim_malloc(8, strdup("abcdefgh"));
+    b->blob.extents.emplace_back(bluestore_pextent_t(offset, 0x2000));
+    b->blob.set_flag(bluestore_blob_t::FLAG_MUTABLE|bluestore_blob_t::FLAG_CSUM);
+    offset += 8192;
+    map.claim(b);
+  }
+}
+
+void dump_onode_ondisk(bluestore_onode_t &o)
+{
+  std::cout << __func__ << " nid " << o.nid
+                  << " size 0x" << std::hex << o.size
+                  << " (" << std::dec << o.size << ")"
+                  << " expected_object_size " << o.expected_object_size
+                  << " expected_write_size " << o.expected_write_size
+                  << std::endl;
+  for (map<string,bufferptr>::iterator p = o.attrs.begin();
+       p != o.attrs.end();
+       ++p) {
+    std::cout << __func__ << "  attr " << p->first
+                    << " len " << p->second.length() << std::endl;
+  }
+  uint64_t pos = 0;
+  for (auto& p : o.extent_map) {
+    std::cout << __func__ << "  lextent 0x" << std::hex << p.first
+                    << std::dec << ": " << p.second
+                    << std::endl;
+    assert(p.first >= pos);
+    pos = p.first + p.second.length;
+  }
+}
+
+TEST(test_enc_dec, lextent_enc_dec) {
+   bluestore_lextent_t l1(23232, 0, 4096);
+   //bluestore_lextent_t l2;
+   size_t sz = enc_dec(size_t(0), l1);
+   std::cout<< " lextent estimated size: " << sz << std::endl;
+   char *buf = new char[sz];
+   char *p = enc_dec(buf, l1);
+   std::cout<< " lextent encoded length: " << int(p-buf) << std::endl;
+   delete []buf;
+   bufferlist bl;
+   l1.encode(bl);
+   std::cout<< " lextent encoded length(default): " << bl.length() << std::endl;
+   //bufferlist bl;
+   //std::cout << " L1 extent: " << l1 << std::endl;
+   //enc(bl, l1);
+   //bufferlist::iterator it = bl.begin();
+   //dec(it,l2);
+   //std::cout << " L2 extent: " << l2 << std::endl;
+}
+
+TEST(test_enc_dec, onode_enc_dec) {
+  bluestore_onode_t onode;
+  generate_dummy_onode(onode);
+  bluestore_onode_t o2;
+  //dump_onode_ondisk(onode);
+  //bufferlist bl;
+  //enc(bl, onode);
+  size_t sz = enc_dec(size_t(0), onode);
+  std::cout<< " Onode estimated size: " << sz << std::endl;
+  char *buf = new char[sz];
+  char *p = enc_dec(buf, onode);
+  std::cout<< " Onode encoded length: " << int(p-buf) << std::endl;
+  delete []buf;
+  //bufferlist::iterator it = bl.begin();
+  //dec(it,o2);
+  //dump_onode_ondisk(o2);
+}
+
+void small_encode_copy(const map<uint64_t,bluestore_lextent_t>& extents, bufferlist& bl)
+{
+  size_t n = extents.size();
+  small_encode_varint(n, bl);
+  if (n) {
+    auto p = extents.begin();
+    small_encode_varint_lowz(p->first, bl);
+    p->second.encode(bl);
+    uint64_t pos = p->first;
+    while (--n) {
+      ++p;
+      small_encode_varint_lowz((uint64_t)p->first - pos, bl);
+      p->second.encode(bl);
+      pos = p->first;
+    }
+  }
+}
+
+struct extent_map_context  : public enc_dec_map_context<uint64_t,bluestore_lextent_t> {
+   uint64_t pos = 0;
+
+   virtual size_t  operator() (size_t p, uint64_t& off, bluestore_lextent_t& le)
+   {
+      return  enc_dec_pair(p,off,le); // need blob + lextent encoding estimate
+   }
+
+   virtual char* operator() (char *p, uint64_t& off, bluestore_lextent_t &le)
+   {
+     uint64_t offset = off-pos;
+     pos = off;
+     p = enc_dec_varint_lowz(p, offset);
+     p = enc_dec(p, le);
+     return p;
+   }
+
+   virtual const char* operator() (const char *p,uint64_t &off, bluestore_lextent_t& le)
+   {
+     uint64_t delta;
+     p = enc_dec_varint_lowz(p, delta);
+     pos += delta;
+     off = pos;
+     p = enc_dec(p, le);
+     return p;
+   }
+};
+
+TEST(test_enc_dec, extent_map) {
+  map<uint64_t,bluestore_lextent_t> extent_map;
+  uint64_t offset = 0;
+  for (int i = 1; i <= 512; i++) {
+    extent_map[offset] =  bluestore_lextent_t(i, 0, 8192);
+    offset += 8192;
+  }
+  size_t sz = enc_dec(size_t(0), extent_map);
+  std::cout<< " extent map estimated size: " << sz << std::endl;
+  char *buf = new char[sz];
+  char *p = enc_dec(buf, extent_map);
+  std::cout<< " extent map encoded length: " << int(p-buf) << std::endl;
+  delete []buf;
+  bufferlist bl;
+  small_encode_copy(extent_map, bl);
+  std::cout << "extent map encoded length(default):" << bl.length() << std::endl;
+}
+
+TEST(test_enc_dec, extent_map_context) {
+  map<uint64_t,bluestore_lextent_t> extent_map;
+  uint64_t offset = 0;
+  for (int i = 1; i <= 512; i++) {
+    extent_map[offset] =  bluestore_lextent_t(i, 0, 8192);
+    offset += 8192;
+  }
+  extent_map_context ctx;
+  size_t sz = enc_dec(size_t(0), extent_map, ctx);
+  std::cout<< " extent map estimated size: " << sz << std::endl;
+  char *buf = new char[sz];
+  char *p = enc_dec(buf, extent_map, ctx);
+  std::cout<< " extent map encoded length: " << int(p-buf) << std::endl;
+  delete []buf;
+  bufferlist bl;
+  small_encode_copy(extent_map, bl);
+  std::cout << "extent map encoded length(default):" << bl.length() << std::endl;
+}
+
+TEST(test_enc_dec, blob_map) {
+  BlueStore::BlobMap bmap;
+  generate_dummy_blob_map(bmap);
+  size_t sz = enc_dec(size_t(0), bmap);
+  std::cout<< " extent map estimated size: " << sz << std::endl;
+  char *buf = new char[sz];
+  char *p = enc_dec(buf, bmap);
+  std::cout<< " Blob map encoded length: " << int(p-buf) << std::endl;
+  bufferlist bl;
+  bmap.encode(bl);
+  std::cout << "blob map encoded length(default):" << bl.length() << std::endl;
 }
 
 int main(int argc, char **argv)

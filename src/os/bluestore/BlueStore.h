@@ -38,6 +38,7 @@
 
 #include "bluestore_types.h"
 #include "BlockDevice.h"
+#include "include/enc_dec.h"
 class Allocator;
 class FreelistManager;
 class BlueFS;
@@ -291,9 +292,15 @@ public:
     bluestore_blob_t blob;   ///< blob metadata
     BufferSpace bc;          ///< buffer cache
 
+    Blob() : id(0), bc(NULL) {}
     Blob(int64_t i, Cache *c) : nref(0), id(i), bc(c) {}
     ~Blob() {
       assert(bc.empty());
+    }
+    DECLARE_ENC_DEC_MEMBER_FUNCTION() {
+      p = enc_dec_varint(p, id);
+      p = enc_dec(p, blob);
+      return p;
     }
 
     friend void intrusive_ptr_add_ref(Blob *b) { b->get(); }
@@ -333,6 +340,10 @@ public:
 
     blob_map_t blob_map;
 
+    DECLARE_ENC_DEC_MEMBER_FUNCTION() {
+      p = enc_dec(p, blob_map);
+      return p;
+    }
     void encode(bufferlist& bl) const;
     void decode(bufferlist::iterator& p, Cache *c);
 
@@ -1238,6 +1249,7 @@ private:
   void _dump_onode(OnodeRef o, int log_level=30);
   void _dump_bnode(BnodeRef b, int log_level=30);
   void _dump_blob_map(BlobMap &bm, int log_level);
+  void _dump_onode_ondisk(bluestore_onode_t &o, int log_level=0);
 
 
   TransContext *_txc_create(OpSequencer *osr);
@@ -1251,6 +1263,10 @@ public:
   void _txc_aio_finish(void *p) {
     _txc_state_proc(static_cast<TransContext*>(p));
   }
+  void onode_blob_encode(OnodeRef o);
+  void onode_blob_encode_v2(OnodeRef o);
+  void onode_blob_decode(bufferlist& bl);
+  void dump_blob_map_decode(BlobMap &bm, int log_level);
 private:
   void _txc_finish_io(TransContext *txc);
   void _txc_finish_kv(TransContext *txc);
@@ -1494,6 +1510,10 @@ public:
     TrackedOpRef op = TrackedOpRef(),
     ThreadPool::TPHandle *handle = NULL) override;
 
+  void dump_onode_ondisk(bluestore_onode_t &o) {
+    _dump_onode_ondisk(o, 0);
+  }
+
 private:
 
   // --------------------------------------------------------
@@ -1666,6 +1686,8 @@ private:
 			unsigned bits, int rem);
 
 };
+DECLARE_ENC_DEC_CLASS(BlueStore::Blob);
+DECLARE_ENC_DEC_CLASS(BlueStore::BlobMap);
 
 inline ostream& operator<<(ostream& out, const BlueStore::OpSequencer& s) {
   return out << *s.parent;
