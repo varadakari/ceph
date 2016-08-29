@@ -288,9 +288,28 @@ WRITE_INTTYPE_ENCODER(int16_t, le16)
 #endif
 
 #define WRITE_CLASS_ENCODER(cl)						\
-  inline void encode(const cl &c, bufferlist &bl, uint64_t features=0) { \
-    ENCODE_DUMP_PRE(); c.encode(bl); ENCODE_DUMP_POST(cl); }		\
-  inline void decode(cl &c, bufferlist::iterator &p) { c.decode(p); }
+  template<>                                                            \
+  struct enc_dec_traits<cl> {                                         \
+    static const bool supported = true;                                 \
+    static const bool feature = false;                                  \
+    static const bool bounded_size = true;                              \
+    static const size_t max_size = sizeof(cl);                        \
+    inline static void encode(                  \
+                    const cl &c, bufferlist &bl, uint64_t features=0) { \
+    ENCODE_DUMP_PRE(); c.encode(bl); ENCODE_DUMP_POST(cl);		\
+    }                                                                   \
+    inline static void encode(      \
+    const cl &v, bufferlist::safe_appender &app, uint64_t features=0) { \
+      encode(v, app);                                             \
+    } \
+    inline static void encode(      \
+    const cl &v, bufferlist::unsafe_appender &app, uint64_t features=0) { \
+      encode(v, app);                                             \
+    }\
+    inline static void decode(                  \
+         cl &c, bufferlist::iterator &p) { c.decode(p); }\
+    static size_t estimate(const cl &v) { return max_size; }          \
+  };                                                                    \
 
 #define WRITE_CLASS_MEMBER_ENCODER(cl)					\
   inline void encode(const cl &c, bufferlist &bl) const {		\
@@ -916,6 +935,7 @@ inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl,
     else
       encode(T(), bl, features);
 }
+
 template<class T>
 inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl)
 {
@@ -939,6 +959,95 @@ inline void decode(std::vector<ceph::shared_ptr<T> >& v, bufferlist::iterator& p
   }
 }
 
+template<typename T>
+struct enc_dec_traits<
+  std::vector<ceph::shared_ptr<T>>,
+  typename std::enable_if<
+    enc_dec_traits<T>::supported && !enc_dec_traits<T>::feature>::type> {
+  const static bool supported = true;
+  const static bool feature = false;
+  const static bool bounded_size = false;
+
+  template <typename U=T> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const std::vector<U> &u, uint64_t features = 0) {
+    return 4 + enc_dec_traits<U>::max_size + u.size();
+  }
+
+  template <typename U=T> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const std::vector<U> &u, uint64_t features = 0) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<T>::estimate(i);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const std::vector<ceph::shared_ptr<T>> &v, App &app, uint64_t features = 0) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (auto &&i: v) {
+      enc_dec_traits<T>::encode(i, app);
+    }
+  }
+
+  static void decode(
+    std::vector<ceph::shared_ptr<T>> &v, bufferlist::iterator &p, uint64_t features = 0) {
+    __u32 n;
+    ::decode(n, p);
+    v.resize(n);
+    for (__u32 i=0; i<n; i++)  {
+      enc_dec_traits<T>::decode(v[i], p);
+    }
+  }
+};
+
+template<typename T>
+struct enc_dec_traits<
+  std::vector<ceph::shared_ptr<T>>,
+  typename std::enable_if<
+    enc_dec_traits<T>::supported && enc_dec_traits<T>::feature>::type> {
+  const static bool supported = true;
+  const static bool feature = true;
+  const static bool bounded_size = false;
+
+  template <typename U=T> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const std::vector<U> &u, uint64_t features) {
+    return 4 + enc_dec_traits<U>::max_size + u.size();
+  }
+
+  template <typename U=T> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const std::vector<U> &u, uint64_t features) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<T>::estimate(i, features);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const std::vector<ceph::shared_ptr<T>> &v, App &app, uint64_t features) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (auto &&i: v) {
+      enc_dec_traits<T>::encode(i, app, features);
+    }
+  }
+
+  static void decode(
+    std::vector<ceph::shared_ptr<T>> &v, bufferlist::iterator &p, uint64_t features) {
+    __u32 n;
+    ::decode(n, p);
+    v.resize(n);
+    for (__u32 i=0; i<n; i++)  {
+      enc_dec_traits<T>::decode(v[i], p, features);
+    }
+  }
+};
 // map (pointers)
 /*
 template<class T, class U>
@@ -1365,5 +1474,4 @@ inline ssize_t decode_file(int fd, bufferptr &bp)
   decode(bp, bli);                                                                                                  
   return bl.length();
 }
-
 #endif

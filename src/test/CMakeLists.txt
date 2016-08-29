@@ -562,6 +562,14 @@ add_executable(unittest_encoding
 add_ceph_unittest(unittest_encoding ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_encoding)
 target_link_libraries(unittest_encoding common librados pthread rt m ${BLKID_LIBRARIES})
 
+# unittest_enc_dec
+add_executable(unittest_enc_dec
+  test_enc_dec.cc
+  )
+add_ceph_unittest(unittest_enc_dec ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_enc_dec)
+target_link_libraries(unittest_enc_dec global)
+
+
 # unittest_addrs
 add_executable(unittest_addrs
   test_addrs.cc

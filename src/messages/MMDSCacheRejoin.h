@@ -67,7 +67,7 @@ class MMDSCacheRejoin : public Message {
       ::decode(dftlock, bl);
     }
   };
-  WRITE_CLASS_ENCODER(inode_strong)
+  //WRITE_CLASS_ENCODER(inode_strong)
 
   struct dirfrag_strong {
     uint32_t nonce;
@@ -83,7 +83,7 @@ class MMDSCacheRejoin : public Message {
       ::decode(dir_rep, bl);
     }
   };
-  WRITE_CLASS_ENCODER(dirfrag_strong)
+  //WRITE_CLASS_ENCODER(dirfrag_strong)
 
   struct dn_strong {
     snapid_t first;
@@ -116,7 +116,7 @@ class MMDSCacheRejoin : public Message {
       ::decode(lock, bl);
     }
   };
-  WRITE_CLASS_ENCODER(dn_strong)
+  //WRITE_CLASS_ENCODER(dn_strong)
 
   struct dn_weak {
     snapid_t first;
@@ -132,7 +132,7 @@ class MMDSCacheRejoin : public Message {
       ::decode(ino, bl);
     }
   };
-  WRITE_CLASS_ENCODER(dn_weak)
+  //WRITE_CLASS_ENCODER(dn_weak)
 
   // -- data --
   int32_t op;
@@ -150,7 +150,7 @@ class MMDSCacheRejoin : public Message {
       ::decode(dft, bl);
     }
   };
-  WRITE_CLASS_ENCODER(lock_bls)
+  //WRITE_CLASS_ENCODER(lock_bls)
 
   // weak
   map<inodeno_t, map<string_snap_t, dn_weak> > weak;

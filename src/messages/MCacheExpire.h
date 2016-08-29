@@ -54,7 +54,7 @@ public:
       ::decode(dentries, bl);
     }
   };
-  WRITE_CLASS_ENCODER(realm)
+  //WRITE_CLASS_ENCODER(realm)
 
   map<dirfrag_t, realm> realms;
 

@@ -4395,7 +4395,7 @@ struct ScrubMap {
     void dump(Formatter *f) const;
     static void generate_test_instances(list<object*>& o);
   };
-  WRITE_CLASS_ENCODER(object)
+  //WRITE_CLASS_ENCODER(object)
 
   map<hobject_t,object, hobject_t::BitwiseComparator> objects;
   eversion_t valid_through;
