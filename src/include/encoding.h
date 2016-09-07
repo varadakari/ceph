@@ -328,20 +328,57 @@ WRITE_INTTYPE_ENCODER(int16_t, le16)
 
 
 // string
-inline void encode(const std::string& s, bufferlist& bl, uint64_t features=0)
+#if 0
+template<>
+inline
+typename std::enable_if<!enc_dec_traits<>::supported>::type
+void encode(const std::string& s, bufferlist& bl, uint64_t features=0)
 {
   __u32 len = s.length();
   encode(len, bl);
   if (len)
     bl.append(s.data(), len);
 }
-inline void decode(std::string& s, bufferlist::iterator& p)
+
+template<>
+inline
+typename std::enable_if<!enc_dec_traits<>::supported>::type
+void decode(std::string& s, bufferlist::iterator& p)
 {
   __u32 len;
   decode(len, p);
   s.clear();
   p.copy(len, s);
 }
+#endif
+
+template<>
+struct enc_dec_traits<std::string> {
+  static const bool supported = true;
+  static const bool feature = false;
+  static const bool bounded_size = true;
+  static const size_t max_size = 0 ;
+
+  inline static int estimate(const std::string &u, uint64_t features = 0) {
+    return 4 + u.length();
+  }
+
+  template <typename App> inline static void encode(
+    const std::string &v, App &app, uint64_t features = 0) {
+    __u32 n = (__u32)(v.length());
+    ::encode(n, app);
+    if (n)
+      app.append((char*)v.data(), n);
+  }
+
+  inline static void decode(
+    std::string &v, bufferlist::iterator &p, uint64_t features = 0) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    p.copy(n, v);
+  }
+};
 
 inline void encode_nohead(const std::string& s, bufferlist& bl)
 {
@@ -447,6 +484,37 @@ inline void decode(T &o, bufferlist& bl)
   assert(p.end());
 }
 
+template<>
+struct enc_dec_traits<bufferlist> {
+  static const bool supported = true;
+  static const bool feature = false;
+  static const bool bounded_size = true;
+  static const size_t max_size = 0 ;
+
+ // template <typename T> static typename std::enable_if<
+  //  enc_dec_traits<T>::bounded_size, size_t
+   // >::type estimate(const std::string &u, uint64_t features = 0) {
+  inline static int estimate(const bufferlist &u, uint64_t features = 0) {
+    return 4 + u.length();
+  }
+
+  template <typename App> inline static void encode(
+    const bufferlist &v, App &app, uint64_t features = 0) {
+    __u32 n = (__u32)(v.length());
+    ::encode(n, app);
+    bufferlist temp_bl = v;
+    char *ch = temp_bl.c_str();
+    app.append(ch, n);
+  }
+
+  inline static void decode(
+    bufferlist &v, bufferlist::iterator &p, uint64_t features = 0) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    p.copy(n, v);
+  }
+};
 
 // -----------------------------
 // STL container types
@@ -924,8 +992,9 @@ inline void decode_nohead(int len, std::vector<T>& v, bufferlist::iterator& p)
 
 // vector (shared_ptr)
 template<class T>
-inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl,
-		   uint64_t features)
+inline
+typename std::enable_if<!enc_dec_traits<T>::supported>::type
+encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl, uint64_t features)
 {
   __u32 n = (__u32)(v.size());
   encode(n, bl);
@@ -937,7 +1006,9 @@ inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl,
 }
 
 template<class T>
-inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl)
+inline
+typename std::enable_if<!enc_dec_traits<T>::supported>::type
+encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl)
 {
   __u32 n = (__u32)(v.size());
   encode(n, bl);
@@ -948,7 +1019,9 @@ inline void encode(const std::vector<ceph::shared_ptr<T> >& v, bufferlist& bl)
       encode(T(), bl);
 }
 template<class T>
-inline void decode(std::vector<ceph::shared_ptr<T> >& v, bufferlist::iterator& p)
+inline
+typename std::enable_if<!enc_dec_traits<T>::supported>::type
+decode(std::vector<ceph::shared_ptr<T> >& v, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1075,7 +1148,9 @@ inline void decode(std::map<T,U*>& m, bufferlist::iterator& p)
 
 // map
 template<class T, class U>
-inline void encode(const std::map<T,U>& m, bufferlist& bl)
+inline
+typename std::enable_if< !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode(const std::map<T,U>& m, bufferlist& bl)
 {
   __u32 n = (__u32)(m.size());
   encode(n, bl);
@@ -1084,6 +1159,7 @@ inline void encode(const std::map<T,U>& m, bufferlist& bl)
     encode(p->second, bl);
   }
 }
+#if 0
 template<class T, class U, class C>
 inline void encode(const std::map<T,U,C>& m, bufferlist& bl)
 {
@@ -1094,8 +1170,12 @@ inline void encode(const std::map<T,U,C>& m, bufferlist& bl)
     encode(p->second, bl);
   }
 }
+#endif
 template<class T, class U>
-inline void encode(const std::map<T,U>& m, bufferlist& bl, uint64_t features)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode(const std::map<T,U>& m, bufferlist& bl, uint64_t features)
 {
   __u32 n = (__u32)(m.size());
   encode(n, bl);
@@ -1105,7 +1185,10 @@ inline void encode(const std::map<T,U>& m, bufferlist& bl, uint64_t features)
   }
 }
 template<class T, class U>
-inline void decode(std::map<T,U>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+decode(std::map<T,U>& m, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1140,7 +1223,10 @@ inline void decode_noclear(std::map<T,U,C>& m, bufferlist::iterator& p)
   }
 }
 template<class T, class U>
-inline void decode_noclear(std::map<T,U>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+decode_noclear(std::map<T,U>& m, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1150,8 +1236,159 @@ inline void decode_noclear(std::map<T,U>& m, bufferlist::iterator& p)
     decode(m[k], p);
   }
 }
+
+template<typename T, typename S>
+struct enc_dec_traits<
+  std::map<T, S>,
+  typename std::enable_if<
+    (enc_dec_traits<T>::supported && !enc_dec_traits<T>::feature)  &&
+    (enc_dec_traits<S>::supported && !enc_dec_traits<S>::feature)>::type> {
+  const static bool supported = true;
+  const static bool feature = false;
+  const static bool bounded_size = false;
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size && enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features = 0) {
+    return 4 + (enc_dec_traits<U>::max_size + enc_dec_traits<V>::max_size) * u.size();
+  }
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size && enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features = 0) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<U>::estimate(i->first) + enc_dec_traits<V>::estimate(i->second);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const std::map<T, S> &v, App &app, uint64_t features = 0) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (typename std::map<T,S>::const_iterator p = v.begin(); p != v.end(); ++p) {
+      enc_dec_traits<T>::encode(p->first, app);
+      enc_dec_traits<S>::encode(p->second, app);
+    }
+  }
+
+  static void decode(
+    std::map<T,S> &v, bufferlist::iterator &p, uint64_t features = 0) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    while (n--) {
+      T k;
+      enc_dec_traits<T>::decode(k, p);
+      enc_dec_traits<S>::decode(v[k], p);
+    }
+  }
+};
+
+template<typename T, typename S>
+struct enc_dec_traits<
+  std::map<T, S>,
+  typename std::enable_if<
+    (enc_dec_traits<T>::supported && enc_dec_traits<T>::feature)  &&
+    (enc_dec_traits<S>::supported && enc_dec_traits<S>::feature)>::type> {
+  const static bool supported = true;
+  const static bool feature = true;
+  const static bool bounded_size = false;
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size && enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features = 0) {
+    return 4 + (enc_dec_traits<U>::max_size + enc_dec_traits<V>::max_size) * u.size();
+  }
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size && !enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<U>::estimate(i->first, features) + enc_dec_traits<V>::estimate(i->second, features);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const std::map<T, S> &v, App &app, uint64_t features) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (typename std::map<T,S>::const_iterator p = v.begin(); p != v.end(); ++p) {
+      enc_dec_traits<T>::encode(p->first, app, features);
+      enc_dec_traits<S>::encode(p->second, app, features);
+    }
+  }
+
+  static void decode(
+    std::map<T,S> &v, bufferlist::iterator &p, uint64_t features) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    while (n--) {
+      T k;
+      enc_dec_traits<T>::decode(k, p, features);
+      enc_dec_traits<S>::decode(v[k], p, features);
+    }
+  }
+};
+
+template<typename T, typename S>
+struct enc_dec_traits<
+  std::map<T, S>,
+  typename std::enable_if<
+    (enc_dec_traits<T>::supported && !enc_dec_traits<T>::feature)  &&
+    (enc_dec_traits<S>::supported && enc_dec_traits<S>::feature)>::type> {
+  const static bool supported = true;
+  const static bool feature = true;
+  const static bool bounded_size = false;
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size && enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features = 0) {
+    return 4 + (enc_dec_traits<U>::max_size + enc_dec_traits<V>::max_size) * u.size();
+  }
+
+  template <typename U=T, typename V=S> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size && !enc_dec_traits<V>::bounded_size, size_t
+    >::type estimate(const std::map<U, V> &u, uint64_t features) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<U>::estimate(i->first) + enc_dec_traits<V>::estimate(i->second, features);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const std::map<T, S> &v, App &app, uint64_t features) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (typename std::map<T,S>::const_iterator p = v.begin(); p != v.end(); ++p) {
+      enc_dec_traits<T>::encode(p->first, app);
+      enc_dec_traits<S>::encode(p->second, app, features);
+    }
+  }
+
+  static void decode(
+    std::map<T,S> &v, bufferlist::iterator &p, uint64_t features) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    while (n--) {
+      T k;
+      enc_dec_traits<T>::decode(k, p);
+      enc_dec_traits<S>::decode(v[k], p, features);
+    }
+  }
+};
+
 template<class T, class U>
-inline void encode_nohead(const std::map<T,U>& m, bufferlist& bl)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode_nohead(const std::map<T,U>& m, bufferlist& bl)
 {
   for (typename std::map<T,U>::const_iterator p = m.begin(); p != m.end(); ++p) {
     encode(p->first, bl);
@@ -1159,7 +1396,10 @@ inline void encode_nohead(const std::map<T,U>& m, bufferlist& bl)
   }
 }
 template<class T, class U>
-inline void encode_nohead(const std::map<T,U>& m, bufferlist& bl, uint64_t features)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode_nohead(const std::map<T,U>& m, bufferlist& bl, uint64_t features)
 {
   for (typename std::map<T,U>::const_iterator p = m.begin(); p != m.end(); ++p) {
     encode(p->first, bl, features);
@@ -1167,7 +1407,10 @@ inline void encode_nohead(const std::map<T,U>& m, bufferlist& bl, uint64_t featu
   }
 }
 template<class T, class U>
-inline void decode_nohead(int n, std::map<T,U>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+decode_nohead(int n, std::map<T,U>& m, bufferlist::iterator& p)
 {
   m.clear();
   while (n--) {
@@ -1179,7 +1422,10 @@ inline void decode_nohead(int n, std::map<T,U>& m, bufferlist::iterator& p)
 
 // multimap
 template<class T, class U>
-inline void encode(const std::multimap<T,U>& m, bufferlist& bl)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode(const std::multimap<T,U>& m, bufferlist& bl)
 {
   __u32 n = (__u32)(m.size());
   encode(n, bl);
@@ -1189,7 +1435,10 @@ inline void encode(const std::multimap<T,U>& m, bufferlist& bl)
   }
 }
 template<class T, class U>
-inline void decode(std::multimap<T,U>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+decode(std::multimap<T,U>& m, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1204,7 +1453,10 @@ inline void decode(std::multimap<T,U>& m, bufferlist::iterator& p)
 
 // ceph::unordered_map
 template<class T, class U>
-inline void encode(const unordered_map<T,U>& m, bufferlist& bl,
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode(const unordered_map<T,U>& m, bufferlist& bl,
 		   uint64_t features)
 {
   __u32 n = (__u32)(m.size());
@@ -1215,7 +1467,10 @@ inline void encode(const unordered_map<T,U>& m, bufferlist& bl,
   }
 }
 template<class T, class U>
-inline void encode(const unordered_map<T,U>& m, bufferlist& bl)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+encode(const unordered_map<T,U>& m, bufferlist& bl)
 {
   __u32 n = (__u32)(m.size());
   encode(n, bl);
@@ -1225,7 +1480,10 @@ inline void encode(const unordered_map<T,U>& m, bufferlist& bl)
   }
 }
 template<class T, class U>
-inline void decode(unordered_map<T,U>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if<
+    !enc_dec_traits<T>::supported && !enc_dec_traits<U>::supported>::type
+decode(unordered_map<T,U>& m, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1239,15 +1497,20 @@ inline void decode(unordered_map<T,U>& m, bufferlist::iterator& p)
 
 // ceph::unordered_set
 template<class T>
-inline void encode(const ceph::unordered_set<T>& m, bufferlist& bl)
+inline
+typename std::enable_if<!enc_dec_traits<T>::supported>::type
+encode(const ceph::unordered_set<T>& m, bufferlist& bl)
 {
   __u32 n = (__u32)(m.size());
   encode(n, bl);
   for (typename ceph::unordered_set<T>::const_iterator p = m.begin(); p != m.end(); ++p)
     encode(*p, bl);
 }
+
 template<class T>
-inline void decode(ceph::unordered_set<T>& m, bufferlist::iterator& p)
+inline
+typename std::enable_if< !enc_dec_traits<T>::supported>::type
+decode(ceph::unordered_set<T>& m, bufferlist::iterator& p)
 {
   __u32 n;
   decode(n, p);
@@ -1258,6 +1521,53 @@ inline void decode(ceph::unordered_set<T>& m, bufferlist::iterator& p)
     m.insert(k);
   }
 }
+
+template<typename T>
+struct enc_dec_traits<
+  ceph::unordered_set<T>,
+  typename std::enable_if<
+    enc_dec_traits<T>::supported && !enc_dec_traits<T>::feature>::type> {
+  const static bool supported = true;
+  const static bool feature = false;
+  const static bool bounded_size = false;
+
+  template <typename U=T> static typename std::enable_if<
+    enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const ceph::unordered_set<U> &u, uint64_t features = 0) {
+    return 4 + enc_dec_traits<U>::max_size + u.size();
+  }
+
+  template <typename U=T> static typename std::enable_if<
+    !enc_dec_traits<U>::bounded_size, size_t
+    >::type estimate(const ceph::unordered_set<U> &u, uint64_t features = 0) {
+    size_t ret = 4;
+    for (auto &&i: u) {
+      ret += enc_dec_traits<T>::estimate(i);
+    }
+    return ret;
+  }
+
+  template <typename App> static void encode(
+    const ceph::unordered_set<T> &v, App &app, uint64_t features = 0) {
+    __u32 n = (__u32)(v.size());
+    ::encode(n, app);
+    for (auto &&i: v) {
+      enc_dec_traits<T>::encode(i, app);
+    }
+  }
+
+  static void decode(
+    ceph::unordered_set<T> &v, bufferlist::iterator &p, uint64_t features = 0) {
+    __u32 n;
+    ::decode(n, p);
+    v.clear();
+    while (n--) {
+      T k;
+      ::decode(k, p);
+      v.insert(k);
+    }
+  }
+};
 
 // deque
 template<class T>
