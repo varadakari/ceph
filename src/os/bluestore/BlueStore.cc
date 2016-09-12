@@ -6065,15 +6065,13 @@ void BlueStore::_txc_finish(TransContext *txc)
 
 void BlueStore::_osr_reap_done(OpSequencer *osr)
 {
-  //std::lock_guard<std::mutex> l(osr->qlock);
   if (!parallel_tx_apply) {
-     osr->qlock.lock();
+    osr->qlock.lock();
   }
   dout(20) << __func__ << " osr " << osr << dendl;
   CollectionRef c;
 
   {
-    std::lock_guard<std::mutex> l(osr->qlock);
     dout(20) << __func__ << " osr " << osr << dendl;
     while (!osr->q.empty()) {
       TransContext *txc = &osr->q.front();
@@ -6297,72 +6295,92 @@ void BlueStore::_kv_sync_thread()
 }
 void BlueStore::apply_kv_tx(TransContext* txc)
 {
-  utime_t start = ceph_clock_now(NULL);
   dout(10) << __func__ << " start prallel tx submitions: " << txc << dendl;
-      alloc->commit_start();
+  utime_t start = ceph_clock_now(NULL);
 
-      // flush/barrier on block device
-      bdev->flush();
+   alloc->commit_start();
 
-      if (!g_conf->bluestore_sync_transaction &&
-	  !g_conf->bluestore_sync_submit_transaction) {
-	  _txc_finalize_kv(txc, txc->t);
-	  int r = db->submit_transaction(txc->t);
-	  assert(r == 0);
-	}
+    // flush/barrier on block device
+    bdev->flush();
 
-      // one final transaction to force a sync
-      KeyValueDB::Transaction t = db->get_transaction();
+    uint64_t high_nid = 0, high_blobid = 0;
+    if (!g_conf->bluestore_sync_transaction &&
+        !g_conf->bluestore_sync_submit_transaction) {
+        _txc_finalize_kv(txc, txc->t);
+        if (txc->last_nid > high_nid) {
+          high_nid = txc->last_nid;
+        }
+        if (txc->last_blobid > high_blobid) {
+          high_blobid = txc->last_blobid;
+        }
+        std::lock_guard<std::mutex> l(id_lock);
+        if (high_nid + g_conf->bluestore_nid_prealloc/2 > nid_max) {
+          nid_max = high_nid + g_conf->bluestore_nid_prealloc;
+          bufferlist bl;
+          ::encode(nid_max, bl);
+          txc->t->set(PREFIX_SUPER, "nid_max", bl);
+          dout(10) << __func__ << " nid_max now " << nid_max << dendl;
+        }
+        if (high_blobid + g_conf->bluestore_blobid_prealloc/2 > blobid_max) {
+          blobid_max = high_blobid + g_conf->bluestore_blobid_prealloc;
+          bufferlist bl;
+          ::encode(blobid_max, bl);
+          txc->t->set(PREFIX_SUPER, "blobid_max", bl);
+          dout(10) << __func__ << " blobid_max now " << blobid_max << dendl;
+        }
+        int r = db->submit_transaction(txc->t);
+        assert(r == 0);
+    }
 
-      vector<bluestore_pextent_t> bluefs_gift_extents;
-      if (bluefs) {
-	int r = _balance_bluefs_freespace(&bluefs_gift_extents, t);
-	assert(r >= 0);
-	if (r > 0) {
-	  for (auto& p : bluefs_gift_extents) {
-	    fm->allocate(p.offset, p.length, t);
-	    bluefs_extents.insert(p.offset, p.length);
-	  }
-	  bufferlist bl;
-	  ::encode(bluefs_extents, bl);
-	  dout(10) << __func__ << " bluefs_extents now " << bluefs_extents
-		   << dendl;
-	  t->set(PREFIX_SUPER, "bluefs_extents", bl);
-	}
+    // one final transaction to force a sync
+    KeyValueDB::Transaction t = db->get_transaction();
+
+    vector<bluestore_pextent_t> bluefs_gift_extents;
+    if (bluefs) {
+      int r = _balance_bluefs_freespace(&bluefs_gift_extents);
+      assert(r >= 0);
+      if (r > 0) {
+        for (auto& p : bluefs_gift_extents) {
+          bluefs_extents.insert(p.offset, p.length);
+        }
+        bufferlist bl;
+        ::encode(bluefs_extents, bl);
+        dout(10) << __func__ << " bluefs_extents now 0x" << std::hex
+                 << bluefs_extents << std::dec << dendl;
+        t->set(PREFIX_SUPER, "bluefs_extents", bl);
       }
+    }
 
-      // cleanup sync wal keys
-	{
-	bluestore_wal_transaction_t* wt =txc->wal_txn;
-	// kv metadata updates
-	_txc_finalize_kv(txc, t);
-	// cleanup the data in overlays
-	if (wt) {
-	   // cleanup the wal
-	   string key;
-	   get_wal_key(wt->seq, &key);
-	   t->rm_single_key(PREFIX_WAL, key);
-	}
+    // cleanup sync wal keys
+    for (std::deque<TransContext *>::iterator it = wal_cleaning.begin();
+          it != wal_cleaning.end();
+          ++it) {
+      bluestore_wal_transaction_t& wt =*(*it)->wal_txn;
+      // kv metadata updates
+      _txc_finalize_kv(*it, t);
+      // cleanup the wal
+      string key;
+      get_wal_key(wt.seq, &key);
+      t->rm_single_key(PREFIX_WAL, key);
+    }
+    int r = db->submit_transaction_sync(t);
+    assert(r == 0);
+
+    utime_t finish = ceph_clock_now(NULL);
+    utime_t dur = finish - start;
+    dout(20) << __func__ << " committed " << txc << " in " << dur << dendl;
+    _txc_state_proc(txc);
+
+    alloc->commit_finish();
+
+    // this is as good a place as any ...
+    _reap_collections();
+
+    if (bluefs) {
+      if (!bluefs_gift_extents.empty()) {
+        _commit_bluefs_freespace(bluefs_gift_extents);
       }
-      int r = db->submit_transaction_sync(t);
-      assert(r == 0);
-
-      utime_t finish = ceph_clock_now(NULL);
-      utime_t dur = finish - start;
-      dout(20) << __func__ << " committed " << txc
-	       << " in " << dur << dendl;
-      _txc_state_proc(txc);
-
-      alloc->commit_finish();
-
-      // this is as good a place as any ...
-      _reap_collections();
-
-      if (bluefs) {
-	if (!bluefs_gift_extents.empty()) {
-	  _commit_bluefs_freespace(bluefs_gift_extents);
-	}
-      }
+    }
 
   dout(10) << __func__ << " finish" << dendl;
 }
