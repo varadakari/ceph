@@ -65,9 +65,9 @@ export DYLD_LIBRARY_PATH=$CEPH_LIB:$DYLD_LIBRARY_PATH
 [ -z "$CEPH_NUM_FS"  ] && CEPH_NUM_FS="$FS"
 [ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW="$RGW"
 
-[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=3
-[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=3
-[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=3
+[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=1
+[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=1
+[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=0
 [ -z "$CEPH_NUM_FS"  ] && CEPH_NUM_FS=1
 [ -z "$CEPH_MAX_MDS" ] && CEPH_MDS_MAX=1
 [ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW=1
@@ -503,6 +503,10 @@ if [ "$start_mon" -eq 1 ]; then
         rgw frontends = fastcgi, civetweb port=$CEPH_RGW_PORT
         rgw dns name = localhost
         filestore fd cache size = 32
+	#ms type = simple
+	ms_async_op_threads = 10
+	ms_async_max_op_threads = 20
+	ms_async_affinity_cores = 1
         run dir = $CEPH_OUT_DIR
         enable experimental unrecoverable data corrupting features = *
 EOF
@@ -562,10 +566,19 @@ $DAEMONOPTS
         filestore wbthrottle btrfs inodes hard limit = 30
 	bluestore fsck on mount = true
 	bluestore block create = true
-	bluestore block db size = 67108864
+	bluestore_block_path = /dev/sdb
+	#bluestore block db size = 67108864
 	bluestore block db create = true
-	bluestore block wal size = 134217728
+	bluestore_block_db_path = /dev/sdc
+	#bluestore block wal size = 134217728
 	bluestore block wal create = true
+	bluestore_block_wal_path = /dev/sdd
+	bluestore_shard_finishers = true
+        osd_op_num_shards = 19
+        osd_op_num_threads_per_shard = 1
+        osd_enable_op_tracker = false
+        osd_pg_object_context_cache_count = 2048
+
 $COSDDEBUG
 $COSDMEMSTORE
 $COSDSHORT

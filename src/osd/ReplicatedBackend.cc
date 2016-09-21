@@ -207,6 +207,12 @@ bool ReplicatedBackend::handle_message(
   )
 {
   dout(10) << __func__ << ": " << op << dendl;
+#if 0
+  //short circuit for a osd op??
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+		  return false;
+  }
+#endif
   switch (op->get_req()->get_type()) {
   case MSG_OSD_PG_PUSH:
     do_push(op);
@@ -589,6 +595,7 @@ public:
   }
 };
 
+// bool dbg_skip_filestore = false;
 void ReplicatedBackend::submit_transaction(
   const hobject_t &soid,
   const eversion_t &at_version,
@@ -657,6 +664,20 @@ void ReplicatedBackend::submit_transaction(
     trim_rollback_to,
     true,
     op_t);
+  // patch 6
+  if(dbg_skip_filestore) {
+      on_local_applied_sync->complete(0);
+      on_local_applied_sync = NULL;
+      Context * on_appld = new C_OSD_OnOpApplied(this, &op);
+      Context* on_com = new C_OSD_OnOpCommit(this, &op);
+      on_appld->complete(0);
+      on_com->complete(0);
+      on_appld = NULL;
+      on_com = NULL;
+      //delete local_t;
+      //delete op_t;
+      return;
+  }
   
   op_t.register_on_applied_sync(on_local_applied_sync);
   op_t.register_on_applied(

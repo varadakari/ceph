@@ -1124,6 +1124,7 @@ protected:
 				   uint64_t length, bool count_bytes,
 				   bool force_changesize=false);
   void add_interval_usage(interval_set<uint64_t>& s, object_stat_sum_t& st);
+  bool skip_filestore(OpRequestRef& op);
 
 
   enum class cache_result_t {

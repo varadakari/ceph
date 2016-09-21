@@ -148,6 +148,7 @@ enum {
 
   l_osd_object_ctx_cache_hit,
   l_osd_object_ctx_cache_total,
+  l_osd_object_ctx_cache_miss_lat,
 
   l_osd_op_cache_hit,
   l_osd_tier_flush_lat,
@@ -218,6 +219,7 @@ class LogChannel;
 class CephContext;
 typedef ceph::shared_ptr<ObjectStore::Sequencer> SequencerRef;
 class MOSDOp;
+extern bool dbg_skip_filestore;
 
 class DeletingState {
   Mutex lock;
@@ -2485,6 +2487,7 @@ public:
   int shutdown();
 
   void handle_signal(int signum);
+  bool skip_filestore(OpRequestRef& op);
 
   /// check if we can throw out op from a disconnected client
   static bool op_is_discardable(MOSDOp *m);

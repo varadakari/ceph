@@ -6,7 +6,7 @@ if test -e build; then
 fi
 mkdir build
 cd build
-cmake $@ ..
+cmake -D ALLOCATOR=jemalloc $@ ..
 
 cat <<EOF > ceph.conf
 plugin dir = lib
