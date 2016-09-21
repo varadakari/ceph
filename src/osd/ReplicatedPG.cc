@@ -38,6 +38,9 @@
 #include "messages/MOSDPGUpdateLogMissingReply.h"
 #include "messages/MCommandReply.h"
 #include "mds/inode_backtrace.h" // Ugh
+#include "common/FInj.h"
+#include "OSDFInj.h"
+
 
 #include "common/config.h"
 #include "include/compat.h"
