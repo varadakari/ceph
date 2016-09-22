@@ -6239,20 +6239,15 @@ void OSD::dispatch_op(OpRequestRef op)
 
 bool OSD::skip_filestore(OpRequestRef& op)
 {
-  if (FINJ(1, 0) < 0) {
-    derr << __func__ << "Setting the debug flag"  << dendl;
-    dbg_skip_filestore = true;
-  } 
-
   bool flag = false;
-  if (dbg_skip_filestore && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
 	  MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
 	  m->finish_decode();
 	  m->clear_payload();
 	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE || 
 	      m->ops[0].op.op == CEPH_OSD_OP_WRITEFULL ||
 	      m->ops[0].op.op == CEPH_OSD_OP_SETALLOCHINT) {
-                dout(0) << __func__ << m << " " << *m << dendl;
+                dout(0) << __func__ << " " << m->ops[0].op.op << dendl;
 		MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
 		reply->set_reply_versions(eversion_t(), 0);
 		reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
@@ -6289,8 +6284,10 @@ bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
   }
 
 // Patch 1 maxing out on cpu reaching 170k
-  if (skip_filestore(op))
-    return true;
+  if (FINJ(1, 0) < 0) {
+    if (skip_filestore(op))
+      return true;
+  } 
 
   switch(op->get_req()->get_type()) {
   // client ops
@@ -8941,10 +8938,10 @@ void OSD::dequeue_op(
 	   << " pg " << *pg << dendl;
 
   // patch 2 80k
-#if 0
-	if (skip_filestore(op)) 
-		return;
-#endif
+  if (FINJ(2, 0) < 0) {
+    if (skip_filestore(op))
+      return;
+  } 
   // share our map with sender, if they're old
   if (op->send_map_update) {
     Message *m = op->get_req();

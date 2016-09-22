@@ -21,6 +21,7 @@
 #include "messages/MOSDPGPush.h"
 #include "messages/MOSDPGPull.h"
 #include "messages/MOSDPGPushReply.h"
+#include "OSDFInj.h"
 
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this
@@ -665,7 +666,7 @@ void ReplicatedBackend::submit_transaction(
     true,
     op_t);
   // patch 6
-  if(dbg_skip_filestore) {
+  if(FINJ(6, 0) < 0) {
       on_local_applied_sync->complete(0);
       on_local_applied_sync = NULL;
       Context * on_appld = new C_OSD_OnOpApplied(this, &op);

@@ -38,7 +38,6 @@
 #include "messages/MOSDPGUpdateLogMissingReply.h"
 #include "messages/MCommandReply.h"
 #include "mds/inode_backtrace.h" // Ugh
-#include "common/FInj.h"
 #include "OSDFInj.h"
 
 
@@ -71,8 +70,6 @@ static ostream& _prefix(std::ostream *_dout, T *pg) {
 #include <utility>
 
 #include <errno.h>
-
-bool dbg_skip_filestore = false;
 
 PGLSFilter::PGLSFilter()
 {
@@ -1563,7 +1560,7 @@ void ReplicatedPG::get_src_oloc(const object_t& oid, const object_locator_t& olo
 bool ReplicatedPG::skip_filestore(OpRequestRef& op)
 {
   bool flag = false;
-  if (dbg_skip_filestore && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
  	  MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
 	  m->finish_decode();
 	  m->clear_payload();
@@ -1976,10 +1973,10 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   // patch 3 #78k-80k
-#if 0
-	if (skip_filestore(op)) 
-		return;
-#endif
+  if (FINJ(3, 0) < 0) {
+    if (skip_filestore(op)) 
+      return;
+  }
 
 
   ObjectContextRef obc;
@@ -2299,18 +2296,16 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
-#if 0
 //patch 4
 //65k-66k 
 //After incresing the cache size to 2048 got 76k
 //need to the improvements for chaitanya on this.
-  if (dbg_skip_filestore && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+  if ((FINJ(4, 0) < 0) && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
 	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
            reply_ctx(ctx, 0);
            return;
 	  }
   }
-#endif
   op->mark_started();
   ctx->src_obc.swap(src_obc);
 
@@ -3312,14 +3307,12 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
 
   RepGather *repop = new_repop(ctx, obc, rep_tid);
   //patch 5
-#if 0
-  if (dbg_skip_filestore && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
-	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
-           reply_ctx(ctx, 0);
-           return;
-	  }
+  if ((FINJ(5, 0) < 0) && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+    if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
+       reply_ctx(ctx, 0);
+       return;
+    }
   }
-#endif
 
   issue_repop(repop, ctx);
   eval_repop(repop);
