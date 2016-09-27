@@ -37,6 +37,70 @@ static ostream& _prefix(std::ostream *_dout, Monitor *mon, const string& name,
 		<< ") ";
 }
 
+class Paxos::C_CollectTimeout : public Context {
+  Paxos *paxos;
+public:
+  explicit C_CollectTimeout(Paxos *p) : paxos(p) {}
+  void finish(int r) {
+    if (r == -ECANCELED)
+      return;
+    paxos->collect_timeout();
+  }
+};
+
+class Paxos::C_AcceptTimeout : public Context {
+  Paxos *paxos;
+public:
+  explicit C_AcceptTimeout(Paxos *p) : paxos(p) {}
+  void finish(int r) {
+    if (r == -ECANCELED)
+      return;
+    paxos->accept_timeout();
+  }
+};
+
+class Paxos::C_LeaseAckTimeout : public Context {
+  Paxos *paxos;
+public:
+  explicit C_LeaseAckTimeout(Paxos *p) : paxos(p) {}
+  void finish(int r) {
+    if (r == -ECANCELED)
+      return;
+    paxos->lease_ack_timeout();
+  }
+};
+
+class Paxos::C_LeaseTimeout : public Context {
+  Paxos *paxos;
+public:
+  explicit C_LeaseTimeout(Paxos *p) : paxos(p) {}
+  void finish(int r) {
+    if (r == -ECANCELED)
+      return;
+    paxos->lease_timeout();
+  }
+};
+
+class Paxos::C_LeaseRenew : public Context {
+  Paxos *paxos;
+public:
+  explicit C_LeaseRenew(Paxos *p) : paxos(p) {}
+  void finish(int r) {
+    if (r == -ECANCELED)
+      return;
+    paxos->lease_renew_timeout();
+  }
+};
+
+class Paxos::C_Trimmed : public Context {
+  Paxos *paxos;
+public:
+  explicit C_Trimmed(Paxos *p) : paxos(p) { }
+  void finish(int r) {
+    paxos->trimming = false;
+  }
+};
+
 MonitorDBStore *Paxos::get_store()
 {
   return mon->store;
@@ -1016,9 +1080,7 @@ void Paxos::commit_proposal()
   assert(mon->is_leader());
   assert(is_refresh());
 
-  list<Context*> ls;
-  ls.swap(committing_finishers);
-  finish_contexts(g_ceph_context, ls);
+  finish_contexts(g_ceph_context, committing_finishers);
 }
 
 void Paxos::finish_round()

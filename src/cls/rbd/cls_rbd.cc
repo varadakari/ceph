@@ -414,6 +414,9 @@ int set_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
+  // newer clients might attempt to mask off features we don't support
+  mask &= RBD_FEATURES_ALL;
+
   uint64_t enabled_features = features & mask;
   if ((enabled_features & RBD_FEATURES_MUTABLE) != enabled_features) {
     CLS_ERR("Attempting to enable immutable feature: %" PRIu64,
@@ -3256,6 +3259,15 @@ int image_remove(cls_method_context_t hctx, const string &image_id) {
            cpp_strerror(r).c_str());
     return r;
   }
+
+  r = cls_cxx_map_remove_key(hctx,
+                             status_global_key(mirror_image.global_image_id));
+  if (r < 0 && r != -ENOENT) {
+    CLS_ERR("error removing global status for image '%s': %s", image_id.c_str(),
+           cpp_strerror(r).c_str());
+    return r;
+  }
+
   return 0;
 }
 

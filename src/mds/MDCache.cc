@@ -6268,7 +6268,8 @@ void MDCache::truncate_inode_finish(CInode *in, LogSegment *ls)
   mds->mdlog->submit_entry(le, new C_MDC_TruncateLogged(this, in, mut));
 
   // flush immediately if there are readers/writers waiting
-  if (in->get_caps_wanted() & (CEPH_CAP_FILE_RD|CEPH_CAP_FILE_WR))
+  if (in->is_waiter_for(CInode::WAIT_TRUNC) ||
+      (in->get_caps_wanted() & (CEPH_CAP_FILE_RD|CEPH_CAP_FILE_WR)))
     mds->mdlog->flush();
 }
 
@@ -6356,10 +6357,22 @@ bool MDCache::trim(int max, int count)
   bool is_standby_replay = mds->is_standby_replay();
   int unexpirable = 0;
   list<CDentry*> unexpirables;
-  // trim dentries from the LRU
-  while (lru.lru_get_size() + unexpirable > (unsigned)max) {
+
+  // trim dentries from the LRU: only enough to satisfy `max`,
+  // unless we see null dentries at the bottom of the LRU,
+  // in which case trim all those.
+  bool trimming_nulls = true;
+  while (trimming_nulls || lru.lru_get_size() + unexpirable > (unsigned)max) {
     CDentry *dn = static_cast<CDentry*>(lru.lru_expire());
-    if (!dn) break;
+    if (!dn) {
+      break;
+    }
+    if (!dn->get_linkage()->is_null()) {
+      trimming_nulls = false;
+      if (lru.lru_get_size() + unexpirable <= (unsigned)max) {
+        break;
+      }
+    }
     if ((is_standby_replay && dn->get_linkage()->inode &&
         dn->get_linkage()->inode->item_open_file.is_on_list()) ||
 	trim_dentry(dn, expiremap)) {

@@ -112,18 +112,8 @@ class MDSDaemon : public Dispatcher, public md_config_obs_t {
 				  const std::set <std::string> &changed);
  protected:
   // tick and other timer fun
-  class C_MDS_Tick : public Context {
-    protected:
-      MDSDaemon *mds_daemon;
-  public:
-    explicit C_MDS_Tick(MDSDaemon *m) : mds_daemon(m) {}
-    void finish(int r) {
-      assert(mds_daemon->mds_lock.is_locked_by_me());
-
-      mds_daemon->tick_event = 0;
-      mds_daemon->tick();
-    }
-  } *tick_event;
+  class C_MDS_Tick;
+  C_MDS_Tick *tick_event;
   void     reset_tick();
 
   void wait_for_omap_osds();
@@ -138,6 +128,7 @@ class MDSDaemon : public Dispatcher, public md_config_obs_t {
   void ms_handle_connect(Connection *con);
   bool ms_handle_reset(Connection *con);
   void ms_handle_remote_reset(Connection *con);
+  bool ms_handle_refused(Connection *con);
 
  protected:
   // admin socket handling

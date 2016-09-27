@@ -93,14 +93,6 @@ struct CommandOp
   std::string  *outs;
 };
 
-/* Device bit shift handling */
-#define MINORBITS	20
-#define MINORMASK	((1U << MINORBITS) - 1)
-
-#define MAJOR(dev)	((unsigned int) ((dev) >> MINORBITS))
-#define MINOR(dev)	((unsigned int) ((dev) & MINORMASK))
-#define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
-
 /* error code for ceph_fuse */
 #define CEPH_FUSE_NO_MDS_UP    -(1<<2) /* no mds up deteced in ceph_fuse */
 
@@ -369,7 +361,7 @@ protected:
   int make_request(MetaRequest *req, int uid, int gid,
 		   //MClientRequest *req, int uid, int gid,
 		   InodeRef *ptarget = 0, bool *pcreated = 0,
-		   int use_mds=-1, bufferlist *pdirbl=0);
+		   mds_rank_t use_mds=-1, bufferlist *pdirbl=0);
   void put_request(MetaRequest *request);
   void unregister_request(MetaRequest *request);
 
@@ -569,6 +561,7 @@ protected:
   void ms_handle_connect(Connection *con);
   bool ms_handle_reset(Connection *con);
   void ms_handle_remote_reset(Connection *con);
+  bool ms_handle_refused(Connection *con);
   bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bool force_new);
 
   int authenticate();

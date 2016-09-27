@@ -225,6 +225,10 @@ if(ALLOCATOR STREQUAL "tcmalloc")
   set(ALLOC_LIBS ${GPERFTOOLS_TCMALLOC_LIBRARY})
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
   set(TCMALLOC_srcs perfglue/heap_profiler.cc)
+elseif(ALLOCATOR STREQUAL "tcmalloc_minimal")
+  set(ALLOC_LIBS ${GPERFTOOLS_TCMALLOC_MINIMAL_LIBRARY})
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
+  set(TCMALLOC_srcs perfglue/disabled_heap_profiler.cc)
 elseif(ALLOCATOR STREQUAL "jemalloc")
   set(ALLOC_LIBS jemalloc)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
@@ -494,6 +498,8 @@ endif(${WITH_LTTNG})
 
 add_subdirectory(global)
 
+add_subdirectory(lua)
+
 # rados object classes
 add_subdirectory(cls)
 
@@ -608,9 +614,14 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL Debug)
   set(ROCKSDB_EXTRA_CXXFLAG ${ROCKSDB_EXTRA_CXXFLAG} -DNDEBUG)
 endif(NOT CMAKE_BUILD_TYPE STREQUAL Debug)
 
+set(ROCKSDB_CXX "${CMAKE_CXX_COMPILER}")
+if (WITH_CCACHE AND CCACHE_FOUND)
+  set(ROCKSDB_CXX "ccache" "${CMAKE_CXX_COMPILER}")
+endif(WITH_CCACHE AND CCACHE_FOUND)
+
 add_custom_target(build_rocksdb
     COMMAND
-    PORTABLE=1 ${disable_jemalloc} $(MAKE) static_lib CXX="${CMAKE_CXX_COMPILER}" EXTRA_CXXFLAGS="${ROCKSDB_EXTRA_CXXFLAG}"
+    PORTABLE=1 ${disable_jemalloc} $(MAKE) static_lib CXX="${ROCKSDB_CXX}" EXTRA_CXXFLAGS="${ROCKSDB_EXTRA_CXXFLAG}"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/rocksdb
     COMMENT "rocksdb building")
 
@@ -650,18 +661,21 @@ install(TARGETS ceph-mds DESTINATION bin)
 add_subdirectory(erasure-code)
 
 # Support/Tools
+if(WITH_TESTS)
 add_subdirectory(googletest/googlemock)
-
 add_subdirectory(test)
+endif(WITH_TESTS)
 
 add_subdirectory(compressor)
 add_subdirectory(tools)
 
+if(WITH_TESTS)
 configure_file(${CMAKE_SOURCE_DIR}/src/ceph-coverage.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-coverage @ONLY)
 
 configure_file(${CMAKE_SOURCE_DIR}/src/ceph-debugpack.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-debugpack @ONLY)
+endif(WITH_TESTS)
 
 configure_file(${CMAKE_SOURCE_DIR}/src/ceph.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph @ONLY)
@@ -675,10 +689,15 @@ configure_file(${CMAKE_SOURCE_DIR}/src/init-ceph.in
 configure_file(ceph-post-file.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-post-file @ONLY)
 
+if(WITH_TESTS)
 install(PROGRAMS
-  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-debugpack
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-coverage
+  DESTINATION bin)
+endif(WITH_TESTS)
+
+install(PROGRAMS
+  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-crush-location
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-post-file
   ${CMAKE_SOURCE_DIR}/src/ceph-run

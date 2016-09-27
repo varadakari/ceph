@@ -60,6 +60,7 @@ enum {
   l_bluestore_state_done_lat,
   l_bluestore_compress_lat,
   l_bluestore_decompress_lat,
+  l_bluestore_csum_lat,
   l_bluestore_compress_success_count,
   l_bluestore_write_pad_bytes,
   l_bluestore_wal_write_ops,
@@ -256,13 +257,13 @@ public:
 
     // return value is the highest cache_private of a trimmed buffer, or 0.
     int discard(uint64_t offset, uint64_t length) {
-      std::lock_guard<std::mutex> l(cache->lock);
+      std::lock_guard<std::recursive_mutex> l(cache->lock);
       return _discard(offset, length);
     }
     int _discard(uint64_t offset, uint64_t length);
 
     void write(uint64_t seq, uint64_t offset, bufferlist& bl, unsigned flags) {
-      std::lock_guard<std::mutex> l(cache->lock);
+      std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_WRITING, seq, offset, bl,
 			     flags);
       b->cache_private = _discard(offset, bl.length());
@@ -270,7 +271,7 @@ public:
     }
     void finish_write(uint64_t seq);
     void did_read(uint64_t offset, bufferlist& bl) {
-      std::lock_guard<std::mutex> l(cache->lock);
+      std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_CLEAN, 0, offset, bl);
       b->cache_private = _discard(offset, bl.length());
       _add_buffer(b, 1, nullptr);
@@ -285,7 +286,7 @@ public:
     }
 
     void dump(Formatter *f) const {
-      std::lock_guard<std::mutex> l(cache->lock);
+      std::lock_guard<std::recursive_mutex> l(cache->lock);
       f->open_array_section("buffers");
       for (auto& i : buffer_map) {
 	f->open_object_section("buffer");
@@ -314,10 +315,8 @@ public:
 
     BufferSpace bc;             ///< buffer cache
 
-    SharedBlob(uint64_t i, const string& k, Cache *c) : sbid(i), key(k), bc(c) {}
-    ~SharedBlob() {
-      assert(bc.empty());
-    }
+    SharedBlob(uint64_t i, const string& k, Cache *c);
+    ~SharedBlob();
 
     friend void intrusive_ptr_add_ref(SharedBlob *b) { b->get(); }
     friend void intrusive_ptr_release(SharedBlob *b) { b->put(); }
@@ -359,7 +358,15 @@ public:
       assert(n > 0);
     }
 
-    SharedBlobRef lookup(uint64_t sbid);
+    SharedBlobRef lookup(uint64_t sbid) {
+      std::lock_guard<std::mutex> l(lock);
+      dummy.sbid = sbid;
+      auto p = uset.find(dummy);
+      if (p == uset.end()) {
+        return nullptr;
+      }
+      return &*p;
+    }
 
     void add(SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
@@ -378,6 +385,7 @@ public:
     }
 
     bool empty() {
+      std::lock_guard<std::mutex> l(lock);
       return uset.empty();
     }
   };
@@ -425,9 +433,7 @@ public:
     }
 
     void dup(Blob& o) {
-      o.id = id;
       o.shared_blob = shared_blob;
-      o.ref_map = ref_map;
       o.blob = blob;
       o.dirty = dirty;
       o.blob_bl = blob_bl;
@@ -548,6 +554,10 @@ public:
     bufferlist inline_bl;    ///< cached encoded map, if unsharded; empty=>dirty
 
     ExtentMap(Onode *o);
+    ~ExtentMap() {
+      spanning_blob_map.clear_and_dispose([&](Blob *b) { b->put(); });
+      extent_map.clear_and_dispose([&](Extent *e) { delete e; });
+    }
 
     bool encode_some(uint32_t offset, uint32_t length, bufferlist& bl,
 		     unsigned *pn);
@@ -596,6 +606,18 @@ public:
 
     /// seek to the first lextent including or after offset
     extent_map_t::iterator seek_lextent(uint64_t offset);
+
+    /// add a new Extent
+    void add(uint32_t lo, uint32_t o, uint32_t l, BlobRef& b) {
+      extent_map.insert(*new Extent(lo, o, l, b));
+    }
+
+    /// remove (and delete) an Extent
+    void rm(extent_map_t::iterator p) {
+      Extent *e = &*p;
+      extent_map.erase(p);
+      delete e;
+    }
 
     bool has_any_lextents(uint64_t offset, uint64_t length);
 
@@ -660,7 +682,7 @@ public:
   /// a cache (shard) of onodes and buffers
   struct Cache {
     PerfCounters *logger;
-    std::mutex lock;                ///< protect lru and other structures
+    std::recursive_mutex lock;          ///< protect lru and other structures
 
     static Cache *create(string type, PerfCounters *logger);
 
@@ -840,7 +862,8 @@ public:
     void add(const ghobject_t& oid, OnodeRef o);
     OnodeRef lookup(const ghobject_t& o);
     void rename(OnodeRef& o, const ghobject_t& old_oid,
-		const ghobject_t& new_oid);
+		const ghobject_t& new_oid,
+		const string& new_okey);
     void clear();
 
     /// return true if f true for any item
@@ -1311,13 +1334,18 @@ private:
   std::mutex reap_lock;
   list<CollectionRef> removed_collections;
 
-  int csum_type;
+  RWLock debug_read_error_lock;
+  set<ghobject_t, ghobject_t::BitwiseComparator> debug_data_error_objects;
+  set<ghobject_t, ghobject_t::BitwiseComparator> debug_mdata_error_objects;
+
+  std::atomic<int> csum_type;
 
   uint64_t block_size;     ///< block size of block device (power of 2)
   uint64_t block_mask;     ///< mask to get just the block offset
   size_t block_size_order; ///< bits to shift to get block size
 
   uint64_t min_alloc_size = 0; ///< minimum allocation unit (power of 2)
+  uint64_t min_min_alloc_size = 0; /// < minimum seen min_alloc_size
   size_t min_alloc_size_order = 0; ///< bits for min_alloc_size
 
   uint64_t max_alloc_size; ///< maximum allocation unit (power of 2)
@@ -1380,6 +1408,7 @@ private:
   int _check_or_set_bdev_label(string path, uint64_t size, string desc,
 			       bool create);
 
+  void _save_min_min_alloc_size(uint64_t new_val);
   int _open_super_meta();
 
   int _reconcile_bluefs_freespace();
@@ -1544,7 +1573,7 @@ public:
   CollectionHandle open_collection(const coll_t &c) override;
 
   bool collection_exists(const coll_t& c) override;
-  bool collection_empty(const coll_t& c) override;
+  int collection_empty(const coll_t& c, bool *empty) override;
   int collection_bits(const coll_t& c) override;
 
   int collection_list(const coll_t& cid, ghobject_t start, ghobject_t end,
@@ -1650,6 +1679,38 @@ public:
     vector<Transaction>& tls,
     TrackedOpRef op = TrackedOpRef(),
     ThreadPool::TPHandle *handle = NULL) override;
+
+  // error injection
+  void inject_data_error(const ghobject_t& o) override {
+    RWLock::WLocker l(debug_read_error_lock);
+    debug_data_error_objects.insert(o);
+  }
+  void inject_mdata_error(const ghobject_t& o) override {
+    RWLock::WLocker l(debug_read_error_lock);
+    debug_mdata_error_objects.insert(o);
+  }
+private:
+  bool _debug_data_eio(const ghobject_t& o) {
+    if (!g_conf->bluestore_debug_inject_read_err) {
+      return false;
+    }
+    RWLock::RLocker l(debug_read_error_lock);
+    return debug_data_error_objects.count(o);
+  }
+  bool _debug_mdata_eio(const ghobject_t& o) {
+    if (!g_conf->bluestore_debug_inject_read_err) {
+      return false;
+    }
+    RWLock::RLocker l(debug_read_error_lock);
+    return debug_mdata_error_objects.count(o);
+  }
+  void _debug_obj_on_delete(const ghobject_t& o) {
+    if (g_conf->bluestore_debug_inject_read_err) {
+      RWLock::WLocker l(debug_read_error_lock);
+      debug_data_error_objects.erase(o);
+      debug_mdata_error_objects.erase(o);
+    }
+  }
 
 private:
 
@@ -1800,6 +1861,11 @@ private:
     uint64_t expected_object_size,
     uint64_t expected_write_size,
     uint32_t flags);
+  int _do_clone_range(TransContext *txc,
+		      CollectionRef& c,
+		      OnodeRef& oldo,
+		      OnodeRef& newo,
+		      uint64_t srcoff, uint64_t length, uint64_t dstoff);
   int _clone(TransContext *txc,
 	     CollectionRef& c,
 	     OnodeRef& oldo,
