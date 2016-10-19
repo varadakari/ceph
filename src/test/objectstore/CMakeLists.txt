@@ -125,7 +125,14 @@ if(HAVE_LIBAIO)
     test_bluefs.cc
     )
   add_ceph_unittest(unittest_bluefs ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_bluefs)
-  target_link_libraries(unittest_bluefs os global)
+  target_link_libraries(unittest_bluefs os global ${ALLOC_LIBS})
+
+  # unittest_rocksbluefs
+  add_executable(unittest_rocksbluefs
+    test_rocksbluefs.cc
+    )
+  add_ceph_unittest(unittest_rocksbluefs ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_rocksbluefs)
+  target_link_libraries(unittest_rocksbluefs kv os common global ${ALLOC_LIBS})
 
   # unittest_bluestore_types
   add_executable(unittest_bluestore_types
