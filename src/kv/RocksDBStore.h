@@ -271,6 +271,9 @@ public:
     bufferlist *out
     );
 
+  void DumpStats();
+
+
   class RocksDBWholeSpaceIteratorImpl :
     public KeyValueDB::WholeSpaceIteratorImpl {
   protected:

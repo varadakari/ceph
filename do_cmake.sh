@@ -6,7 +6,7 @@ if test -e build; then
 fi
 mkdir build
 cd build
-cmake "$@" ..
+cmake -DALLOCATOR=jemalloc "$@" ..
 
 # minimal config to find plugins
 cat <<EOF > ceph.conf

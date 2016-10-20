@@ -19,6 +19,14 @@
 #include "kv/KeyValueDB.h"
 #include "os/kstore/kv.h"
 
+#define NUM_WRITERS 4
+#define NUM_OBJMAP_WRITERS 1
+#define NUM_HEADER_WRITERS 1
+#define NUM_TRIMMERS 1
+
+#define RUNTIME 120
+
+
 string get_temp_bdev(uint64_t size)
 {
   static int n = 0;
@@ -68,9 +76,18 @@ KeyValueDB* createdb(BlueFS *fs)
     env = NULL;
     return NULL;
   }
-  string options;
+  //string options;
   stringstream err;
-  options = g_conf->bluestore_rocksdb_options;
+  //options = g_conf->bluestore_rocksdb_options;
+  string options = ""
+			  "create_if_missing=true;"
+			  "max_write_buffer_number=16;"
+			  "max_background_compactions=4;"
+			  "stats_dump_period_sec = 5;"
+			  "min_write_buffer_number_to_merge = 3;"
+			  "level0_file_num_compaction_trigger = 4;"
+			  "compression = kNoCompression;"
+			  "recycle_log_file_num=16;";
   db->init(options);
   int r = db->create_and_open(err);
   if (r) {
@@ -107,6 +124,7 @@ uint64_t maxobjects = 256000;
 uint64_t maxpgs = 32;
 uint64_t maxoffset = 1023;
 std::atomic_ullong  wal_seq(0);
+std::atomic_ullong  num_deletes(0);
 std::map<uint64_t, uint64_t> pglog_map; // pg to pglog
 std::map<uint64_t, uint64_t> pg_trim; // pg to previous trim 
 string block_name_prefix("rbd_data.10046b8b4567");
@@ -144,12 +162,15 @@ uint64_t get_pglog_version(int cid)
 }
 void dump_pglog_map()
 {
+  cout << "  ******** PGLOG MAP *****  " << std::endl;
   for (std::map<uint64_t, uint64_t>::iterator it=pglog_map.begin(); it!=pglog_map.end(); ++it)
       std::cout << it->first << " => " << it->second << '\n';
 
+  cout << "  ******** PGTRIM MAP *****  " << std::endl;
   for (std::map<uint64_t, uint64_t>::iterator it=pg_trim.begin(); it!=pg_trim.end(); ++it)
       std::cout << it->first << " => " << it->second << '\n';
 }
+
 uint64_t get_rand_offset()
 {
   boost::random::uniform_int_distribution<> dist(0, maxoffset);
@@ -465,6 +486,7 @@ void generate_objmap_trx(KeyValueDB *db)
       db->submit_transaction(t);
       KeyValueDB::Transaction dt = db->get_transaction();
       dt->rm_single_key("L", seq_key);
+      num_deletes++;
       db->submit_transaction_sync(dt);
 }
 
@@ -504,7 +526,16 @@ void generate_trim_trx(uint64_t cid, KeyValueDB *db)
         KeyValueDB::Transaction dt = db->get_transaction();
         db->submit_transaction_sync(dt);
 	pg_trim[cid] += 100;
+	num_deletes += 100;
 }
+
+struct stats {
+  uint64_t num_ops;
+  uint64_t num_bytes;
+  stats():num_ops(0),num_bytes(0){};
+};
+typedef struct stats stats_t;
+std::map<uint64_t, stats_t> stats_map;
 
 void trim_pglog(KeyValueDB *db)
 {
@@ -518,6 +549,9 @@ void trim_pglog(KeyValueDB *db)
     }
   }
  size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
+ struct stats a;
+ a.num_ops = num_trims;
+ stats_map[sz] = a;
  cout <<" Number of trims from " << sz << " : " << num_trims << std::endl;
 }
 
@@ -539,6 +573,10 @@ void write_data(KeyValueDB *db)
       num_writes++;
     }
     size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
+    struct stats a;
+    a.num_ops = num_writes;
+    a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + DATA_ONODE + BITMAP_BUF + STAT_BUF);
+    stats_map[sz] = a;
     cout <<" Number of writes from " << sz << " : " << num_writes << std::endl;
 }
 
@@ -551,6 +589,10 @@ void write_objmap(KeyValueDB *db)
       num_writes++;
     }
     size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
+    struct stats a;
+    a.num_ops = num_writes;
+    a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + OBJMAP_ONODE + WAL_BUF);
+    stats_map[sz] = a;
     cout <<" Number of obj map writes from " << sz << " : " << num_writes << std::endl;
 }
 
@@ -562,15 +604,27 @@ void write_header(KeyValueDB *db)
       num_writes++;
     }
     size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
+    struct stats a;
+    a.num_ops = num_writes;
+    a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + HEADER_ONODE);
+    stats_map[sz] = a;
     cout <<" Number of header writes from " << sz << " : " << num_writes << std::endl;
 }
 
-#define NUM_WRITERS 4
-#define NUM_OBJMAP_WRITERS 1
-#define NUM_HEADER_WRITERS 1
-#define NUM_TRIMMERS 1
+void dump_stats()
+{
+  uint64_t total_ops = 0, total_bytes = 0;
+  for(auto &it: stats_map) {
+      std::cout << it.first << " => " << it.second.num_ops << '\t' << it.second.num_bytes <<'\n';
+      total_ops += it.second.num_ops;
+      total_bytes += it.second.num_bytes;
+  }
+  cout<<" Total ops: " << total_ops << "\n Total bytes:  "<< total_bytes << std::endl;
+  cout <<" Total deletes: " << num_deletes << std::endl;
+  cout << " OPs per sec: " << total_ops/RUNTIME << std::endl;
+  cout << " Bytes per sec: " << total_bytes/RUNTIME << std::endl;
+}
 
-#define RUNTIME 300
 
 TEST(RocksBlueFS, test_1) {
   g_ceph_context->_conf->set_val(
@@ -621,6 +675,8 @@ TEST(RocksBlueFS, test_1) {
     join_all(trim_threads);
   }
   dump_pglog_map();
+  dump_stats();
+  db->DumpStats();
 #if 0
   int n = 1000
   for (int i = 0 ; i < n; i++) {
@@ -635,6 +691,7 @@ TEST(RocksBlueFS, test_1) {
 #endif
   //release_buffers();
   //dump the stats
+  sleep(10);
   delete db;
   db = NULL;
   fs.umount();

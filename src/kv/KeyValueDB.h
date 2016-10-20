@@ -285,6 +285,7 @@ public:
 
   /// compact the underlying store
   virtual void compact() {}
+  virtual void DumpStats(){}
 
   /// compact db for all keys with a given prefix
   virtual void compact_prefix(const std::string& prefix) {}
