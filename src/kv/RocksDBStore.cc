@@ -425,6 +425,13 @@ int RocksDBStore::get_info_log_level(string info_log_level)
   }
 }
 
+void RocksDBStore::DumpStats() {
+    string stats;
+    db->GetProperty("rocksdb.stats", &stats);
+    dout(0) << __func__ << " stats: " << stats << dendl;
+
+}
+
 RocksDBStore::RocksDBTransactionImpl::RocksDBTransactionImpl(RocksDBStore *_db)
 {
   db = _db;
