@@ -6291,14 +6291,16 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       if (txc->ioc.has_pending_aios()) {
 	txc->state = TransContext::STATE_AIO_WAIT;
 	_txc_aio_submit(txc);
-	return;
+        if (g_conf->bluestore_bdev_aio)
+	  return;
       }
       // ** fall-thru **
 
     case TransContext::STATE_AIO_WAIT:
       txc->log_state_latency(logger, l_bluestore_state_aio_wait_lat);
       _txc_finish_io(txc);  // may trigger blocked txc's too
-      return;
+      if (g_conf->bluestore_bdev_aio)
+         return;
 
     case TransContext::STATE_IO_DONE:
       //assert(txc->osr->qlock.is_locked());  // see _txc_finish_io
@@ -6343,7 +6345,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	  ++txc->osr->kv_committing_serially;
 	}
       }
-      return;
+      // Should be in sharded worker context here
+      if (!g_conf->bluestore_bdev_aio)
+         return;
     case TransContext::STATE_KV_QUEUED:
       txc->log_state_latency(logger, l_bluestore_state_kv_committing_lat);
       txc->state = TransContext::STATE_KV_DONE;
@@ -6409,6 +6413,9 @@ void BlueStore::_txc_finish_io(TransContext *txc)
   OpSequencer *osr = txc->osr.get();
   std::lock_guard<std::mutex> l(osr->qlock);
   txc->state = TransContext::STATE_IO_DONE;
+  // we shouldn't get out of order txc's here when bdev_aio is off
+  if (!g_conf->bluestore_bdev_aio)
+      return;
 
   OpSequencer::q_list_t::iterator p = osr->q.iterator_to(*txc);
   while (p != osr->q.begin()) {
@@ -7009,7 +7016,29 @@ int BlueStore::queue_transactions(
 void BlueStore::_txc_aio_submit(TransContext *txc)
 {
   dout(10) << __func__ << " txc " << txc << dendl;
-  bdev->aio_submit(&txc->ioc);
+
+  if (!g_conf->bluestore_bdev_aio &&
+      txc->state != TransContext::STATE_WAL_AIO_WAIT )  {
+    list<FS::aio_t>::iterator p = txc->ioc.pending_aios.begin();
+    while (p != txc->ioc.pending_aios.end()) {
+      FS::aio_t& aio = *p;
+      dout(20) << __func__ << "  aio " << &aio << " fd " << aio.fd
+             << " 0x" << std::hex << aio.offset << "~" << aio.length
+             << std::dec << dendl;
+      for (vector<iovec>::iterator q = aio.iov.begin(); q != aio.iov.end(); ++q) {
+       dout(30) << __func__ << "   iov " << (void*)q->iov_base
+               << " len " << q->iov_len << dendl;
+       struct iovec iov;
+       iov.iov_base = q->iov_base;
+       iov.iov_len = q->iov_len;
+       pwritev(aio.fd, &iov, 1, aio.offset);
+      }
+      ++p;
+    }
+    txc->ioc.pending_aios.clear();
+  } else {
+    bdev->aio_submit(&txc->ioc);
+  }
 }
 
 void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
