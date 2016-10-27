@@ -13,19 +13,26 @@
 #include "include/stringify.h"
 #include "common/errno.h"
 #include <gtest/gtest.h>
+#include <boost/lexical_cast.hpp>
+#include <boost/program_options/option.hpp>
+#include <boost/program_options/options_description.hpp>
+#include <boost/program_options/variables_map.hpp>
+#include <boost/program_options/cmdline.hpp>
+#include <boost/program_options/parsers.hpp>
+
 
 #include "os/bluestore/BlueFS.h"
 #include "os/bluestore/BlueRocksEnv.h"
 #include "kv/KeyValueDB.h"
 #include "os/kstore/kv.h"
 
-#define NUM_WRITERS 4
 #define NUM_OBJMAP_WRITERS 1
 #define NUM_HEADER_WRITERS 1
 #define NUM_TRIMMERS 1
+#define NUM_KV_THREADS 1
 
-#define RUNTIME 120
-
+namespace po = boost::program_options;
+using namespace std;
 
 string get_temp_bdev(uint64_t size)
 {
@@ -78,6 +85,7 @@ KeyValueDB* createdb(BlueFS *fs)
   }
   //string options;
   stringstream err;
+#if 0
   //options = g_conf->bluestore_rocksdb_options;
   string options = ""
 			  "create_if_missing=true;"
@@ -88,6 +96,22 @@ KeyValueDB* createdb(BlueFS *fs)
 			  "level0_file_num_compaction_trigger = 4;"
 			  "compression = kNoCompression;"
 			  "recycle_log_file_num=16;";
+#endif
+  string options = ""
+			  "max_write_buffer_number=16;"
+			  "min_write_buffer_number_to_merge=2;"
+			  "recycle_log_file_num=16;"
+			  "compaction_threads=8;"
+			  "flusher_threads=4;"
+			  "max_background_compactions=8;"
+			  "max_background_flushes=4;"
+			  "max_bytes_for_level_base=5368709120;"
+			  "write_buffer_size=83886080;"
+			  "level0_file_num_compaction_trigger=2;"
+			  "level0_slowdown_writes_trigger=400;"
+			  "level0_stop_writes_trigger=800;"
+			  "compression = kNoCompression;"
+			  "stats_dump_period_sec=10;";
   db->init(options);
   int r = db->create_and_open(err);
   if (r) {
@@ -123,7 +147,10 @@ boost::random::mt19937 gen;
 uint64_t maxobjects = 256000;
 uint64_t maxpgs = 32;
 uint64_t maxoffset = 1023;
-std::atomic_ullong  wal_seq(0);
+int runtime;
+int num_writers;
+std::atomic_ullong inc_wal_seq(0);
+std::atomic_ullong dec_wal_seq(0);
 std::atomic_ullong  num_deletes(0);
 std::map<uint64_t, uint64_t> pglog_map; // pg to pglog
 std::map<uint64_t, uint64_t> pg_trim; // pg to previous trim 
@@ -134,6 +161,11 @@ bufferlist pglog_buf, pginfo_buf, onode_buf, bitmap_buf, statfs_buf;
 bufferlist wal_buf, objmap_onode_buf;
 bufferlist header_onode_buf; //3k
 bool stop = false;
+bool kv_sync_queue = false;
+deque<KeyValueDB::Transaction> kv_queue, kv_committing;
+std::mutex kv_lock;
+std::mutex pglog_lock;
+std::string device;
 
 uint64_t get_nid()
 {
@@ -156,6 +188,7 @@ uint64_t get_cid()
 
 uint64_t get_pglog_version(int cid)
 {
+   std::unique_lock<std::mutex> l(pglog_lock);
    uint64_t val = pglog_map[cid];
    pglog_map[cid] += 1;
    return val;
@@ -428,7 +461,12 @@ void make_offset_key(uint64_t offset, std::string *key)
 
 uint64_t get_wal_seq()
 {
- return wal_seq++;
+ return inc_wal_seq++;
+}
+
+uint64_t get_dec_wal_seq()
+{
+ return dec_wal_seq++;
 }
 
 static void get_wal_key(uint64_t seq, string *out)
@@ -457,9 +495,13 @@ void generate_data_trx(KeyValueDB *db)
       t->set("O", onode_key, onode_buf);
       t->merge("b", off_key, bitmap_buf);
       t->merge("T", "bluestore_statfs", statfs_buf);
-      db->submit_transaction(t);
-      KeyValueDB::Transaction dt = db->get_transaction();
-      db->submit_transaction_sync(dt);
+      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      if (kv_sync_queue) {
+	std::unique_lock<std::mutex> l(kv_lock);
+	kv_queue.push_back(t);
+      } else {
+	db->submit_transaction_sync(t);
+      }
 }
 
 
@@ -483,11 +525,34 @@ void generate_objmap_trx(KeyValueDB *db)
       t->set("M", stringify(c_nid) + "_info" , pginfo_buf);
       t->set("O", onode_key, objmap_onode_buf);
       t->set("L", seq_key, wal_buf);
-      db->submit_transaction(t);
-      KeyValueDB::Transaction dt = db->get_transaction();
-      dt->rm_single_key("L", seq_key);
-      num_deletes++;
+      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      if (kv_sync_queue) {
+	std::unique_lock<std::mutex> l(kv_lock);
+	kv_queue.push_back(t);
+      } else {
+        db->submit_transaction(t);
+      }
+}
+
+void remove_wal_key_tx(KeyValueDB *db)
+{
+    uint64_t wseq = get_dec_wal_seq();
+    while (wseq == inc_wal_seq) {
+      sleep(1);
+    }
+    string seq_key;
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    get_wal_key(wseq, &seq_key);
+    KeyValueDB::Transaction dt = db->get_transaction();
+    dt->rm_single_key("L", seq_key);
+    num_deletes++;
+    if (kv_sync_queue) {
+      std::unique_lock<std::mutex> l(kv_lock);
+      kv_queue.push_back(dt);
+    } else {
       db->submit_transaction_sync(dt);
+    }
+
 }
 
 void generate_header_trx(KeyValueDB *db)
@@ -505,9 +570,15 @@ void generate_header_trx(KeyValueDB *db)
       t->set("M", stringify(c_nid)+"."+stringify(cid)+"."+stringify(pglog_version), pglog_buf);
       t->set("M", stringify(c_nid) + "_info" , pginfo_buf);
       t->set("O", onode_key, header_onode_buf);
-      db->submit_transaction(t);
-      KeyValueDB::Transaction dt = db->get_transaction();
-      db->submit_transaction_sync(dt);
+      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      if (kv_sync_queue) {
+        std::unique_lock<std::mutex> l(kv_lock);
+	kv_queue.push_back(t);
+      } else {
+	db->submit_transaction(t);
+	KeyValueDB::Transaction dt = db->get_transaction();
+	db->submit_transaction_sync(dt);
+      }
 }
 
 void generate_trim_trx(uint64_t cid, KeyValueDB *db)
@@ -522,9 +593,15 @@ void generate_trim_trx(uint64_t cid, KeyValueDB *db)
 	  t->rmkey("M", stringify(c_nid)+"."+stringify(cid)+"."+stringify(prev));
 	  prev++;
 	}
-        db->submit_transaction(t);
-        KeyValueDB::Transaction dt = db->get_transaction();
-        db->submit_transaction_sync(dt);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+	if (kv_sync_queue) {
+          std::unique_lock<std::mutex> l(kv_lock);
+	  kv_queue.push_back(t);
+	} else {
+	  db->submit_transaction(t);
+	  KeyValueDB::Transaction dt = db->get_transaction();
+	  db->submit_transaction_sync(dt);
+	}
 	pg_trim[cid] += 100;
 	num_deletes += 100;
 }
@@ -596,6 +673,21 @@ void write_objmap(KeyValueDB *db)
     cout <<" Number of obj map writes from " << sz << " : " << num_writes << std::endl;
 }
 
+void trim_objmap(KeyValueDB *db)
+{
+    uint64_t num_wal_deletes = 0;
+    while(!stop) {
+      remove_wal_key_tx(db);
+      num_wal_deletes++;
+    }
+    size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
+    struct stats a;
+    a.num_ops = num_wal_deletes;
+    a.num_bytes = num_wal_deletes * WAL_BUF;
+    stats_map[sz] = a;
+    cout <<" Number of wal deletes from " << sz << " : " << num_wal_deletes << std::endl;
+}
+
 void write_header(KeyValueDB *db)
 {
     uint64_t num_writes = 0;
@@ -611,6 +703,33 @@ void write_header(KeyValueDB *db)
     cout <<" Number of header writes from " << sz << " : " << num_writes << std::endl;
 }
 
+void kv_sync_thread(KeyValueDB *db)
+{
+  while(true) {
+    assert(kv_committing.empty());
+    if (kv_queue.empty()) {
+      if (stop)
+	break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    else {
+      kv_lock.lock();
+      kv_committing.swap(kv_queue);
+      kv_lock.unlock();
+      for (auto txc : kv_committing) {
+	int r = db->submit_transaction(txc);
+        assert(r == 0);
+      }
+      KeyValueDB::Transaction dt = db->get_transaction();
+      int r = db->submit_transaction_sync(dt);
+      assert(r == 0);
+      //cout <<" Committed " << kv_committing.size() << " Transactions." << std::endl;
+      kv_committing.clear();
+    }
+  }
+}
+
+
 void dump_stats()
 {
   uint64_t total_ops = 0, total_bytes = 0;
@@ -621,17 +740,17 @@ void dump_stats()
   }
   cout<<" Total ops: " << total_ops << "\n Total bytes:  "<< total_bytes << std::endl;
   cout <<" Total deletes: " << num_deletes << std::endl;
-  cout << " OPs per sec: " << total_ops/RUNTIME << std::endl;
-  cout << " Bytes per sec: " << total_bytes/RUNTIME << std::endl;
+  cout << " OPs per sec: " << total_ops/runtime << std::endl;
+  cout << " Bytes per sec: " << total_bytes/runtime << std::endl;
 }
 
 
 TEST(RocksBlueFS, test_1) {
   g_ceph_context->_conf->set_val(
-    "bluefs_alloc_size",
-    "65536");
+    "rocksdb_cache_size",
+    "1073741824");
   g_ceph_context->_conf->apply_changes(NULL);
-  string fn = "/dev/sdd";
+  string fn = device;
   BlueFS fs;
   KeyValueDB *db;
   uuid_d fsid;
@@ -647,13 +766,19 @@ TEST(RocksBlueFS, test_1) {
   generate_buffers();
   {
     std::vector<std::thread> write_threads;
-    for (int i=0; i<NUM_WRITERS ; i++) {
+    for (int i=0; i<num_writers; i++) {
       write_threads.push_back(std::thread(write_data, db));
     }
 
+#if 0
     std::vector<std::thread> objmap_threads;
     for (int i=0; i<NUM_OBJMAP_WRITERS; i++) {
       objmap_threads.push_back(std::thread(write_objmap, db));
+    }
+
+    std::vector<std::thread> trim_objmap_threads;
+    for (int i=0; i<NUM_OBJMAP_WRITERS; i++) {
+      trim_objmap_threads.push_back(std::thread(trim_objmap, db));
     }
 
     std::vector<std::thread> header_threads;
@@ -665,31 +790,32 @@ TEST(RocksBlueFS, test_1) {
     for (int i=0; i<NUM_TRIMMERS; i++) {
       trim_threads.push_back(std::thread(trim_pglog, db));
     }
+#endif
 
-    sleep(RUNTIME);
+    std::vector<std::thread> kv_threads;
+    if (kv_sync_queue) {
+      for (int i=0; i<NUM_KV_THREADS; i++) {
+	kv_threads.push_back(std::thread(kv_sync_thread, db));
+      }
+    }
+
+    sleep(runtime);
     stop = true;
 
     join_all(write_threads);
+#if 0
     join_all(objmap_threads);
+    join_all(trim_objmap_threads);
     join_all(header_threads);
     join_all(trim_threads);
+#endif
+    if (kv_sync_queue) {
+      join_all(kv_threads);
+    }
   }
   dump_pglog_map();
   dump_stats();
   db->DumpStats();
-#if 0
-  int n = 1000
-  for (int i = 0 ; i < n; i++) {
-    generate_data_trx(db);
-  }
-  for (int i = 0 ; i < n; i++) {
-    generate_objmap_trx(db);
-  }
-  for (int i = 0 ; i < n; i++) {
-    generate_header_trx(db);
-  }
-#endif
-  //release_buffers();
   //dump the stats
   sleep(10);
   delete db;
@@ -697,78 +823,58 @@ TEST(RocksBlueFS, test_1) {
   fs.umount();
 }
 
-#if 0
-TEST(BlueFS, test_write) {
-  g_ceph_context->_conf->set_val(
-    "bluefs_alloc_size",
-    "65536");
-  g_ceph_context->_conf->apply_changes(NULL);
-  string fn = "/dev/sdd";
-  BlueFS fs;
-  KeyValueDB *db;
-  uuid_d fsid;
-  fs.add_block_device(BlueFS::BDEV_DB, fn);
-  fs.add_block_extent(BlueFS::BDEV_DB, BLUEFS_START, fs.get_block_device_size(BlueFS::BDEV_DB) - BLUEFS_START);
-  ASSERT_EQ(0, fs.mkfs(fsid));
-  ASSERT_EQ(0, fs.mount());
-  int n = 1024;
-  utime_t start = ceph_clock_now(NULL);
-  db = createdb(&fs);
-  if (!db) {
-    std::cerr << __func__ << " error creating db" << std::endl;
-    assert(0);
-  }
-
+int main(int argc, char **argv) {
+  try 
   {
-    cout << "priming" << std::endl;
-    // prime
-    bufferlist big;
-    bufferptr bp(1048576);
-    bp.zero();
-    big.append(bp);
-    for (int i=0; i<n; ++i) {
-      KeyValueDB::Transaction t = db->get_transaction();
-      t->set("prefix", "big" + stringify(i), big);
-      db->submit_transaction_sync(t);
+    po::options_description desc{"Options"};
+    desc.add_options()
+      ("help,h", "Help screen")
+      ("runtime", po::value<uint16_t>()->default_value(120), "runtime")
+      ("kvsync", po::value<bool>()->default_value(false), "KV Sync")
+      ("num-writers", po::value<int>()->default_value(16), "Num Writers")
+      ("device", po::value<std::string>()->default_value("/dev/null"), "Device");
+
+    po::variables_map vm; 
+    po::store(parse_command_line(argc, argv, desc), vm);
+    po::notify(vm);
+
+    if (vm.count("help"))
+      std::cout << desc << '\n';
+    if (vm.count("kvsync")) {
+      kv_sync_queue = vm["kvsync"].as<bool>();
+      std::cout << "Kv sync: " << kv_sync_queue << '\n';
+    }
+    if (vm.count("runtime")) {
+      runtime = vm["runtime"].as<uint16_t>();
+      std::cout << "Runtime: " << runtime << '\n';
+    }
+    if (vm.count("device")) {
+      device = vm["device"].as<std::string>();
+      std::cout << "Device: " << device << '\n';
+    }
+    if (vm.count("num-writers")) {
+      num_writers = vm["num-writers"].as<int>();
+      std::cout << "Num writers: " << num_writers << '\n';
     }
   }
-  utime_t end = ceph_clock_now(NULL);
-  utime_t dur = end - start;
-  cout << n << " commits in " << dur << ", avg latency " << (dur / (double)n)
-       << std::endl;
-  cout << "now doing small writes" << std::endl;
-  bufferlist data;
-  bufferptr bp(1024);
-  bp.zero();
-  data.append(bp);
-  start = ceph_clock_now(NULL);
-  for (int i=0; i<n; ++i) {
-    KeyValueDB::Transaction t = db->get_transaction();
-    t->set("prefix", "key" + stringify(i), data);
-    db->submit_transaction_sync(t);
+  catch (const po::error &ex)
+  {
+    std::cerr << ex.what() << '\n';
+    return -1;
   }
-  end = ceph_clock_now(NULL);
-  dur = end - start;
-  cout << n << " commits in " << dur << ", avg latency " << (dur / (double)n)
-       << std::endl;
 
-  delete db;
-  db = NULL;
-  fs.umount();
-}
-#endif
-int main(int argc, char **argv) {
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
   env_to_vec(args);
 
   vector<const char *> def_args;
-  def_args.push_back("--debug-bluefs=1/20");
-  def_args.push_back("--debug-bdev=1/20");
+  def_args.push_back("--debug-bluefs=0/0");
+  def_args.push_back("--debug-bdev=0/0");
 
   global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY,
 	      0);
   common_init_finish(g_ceph_context);
+
   g_ceph_context->_conf->set_val(
     "enable_experimental_unrecoverable_data_corrupting_features",
     "*");
