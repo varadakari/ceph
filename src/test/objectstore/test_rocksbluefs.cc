@@ -820,6 +820,7 @@ TEST(RocksBlueFS, test_1) {
   sleep(10);
   delete db;
   db = NULL;
+  fs.DumpPerfStats();
   fs.umount();
 }
 

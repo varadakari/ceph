@@ -12,6 +12,7 @@
 #include <memory>
 #include <boost/scoped_ptr.hpp>
 #include "rocksdb/write_batch.h"
+#include "rocksdb/statistics.h"
 #include <errno.h>
 #include "common/errno.h"
 #include "common/dout.h"
@@ -62,6 +63,7 @@ class RocksDBStore : public KeyValueDB {
   void *priv;
   rocksdb::DB *db;
   rocksdb::Env *env;
+  std::shared_ptr<rocksdb::Statistics> dbstats;
   string options_str;
   int do_open(ostream &out, bool create_if_missing);
 

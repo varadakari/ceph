@@ -288,6 +288,8 @@ int RocksDBStore::do_open(ostream &out, bool create_if_missing)
            << " num of cache shards to " << (1 << g_conf->rocksdb_cache_shard_bits) << dendl;
 
   opt.merge_operator.reset(new MergeOperatorRouter(*this));
+  dbstats = rocksdb::CreateDBStatistics();
+  opt.statistics = dbstats;
   status = rocksdb::DB::Open(opt, path, &db);
   if (!status.ok()) {
     derr << status.ToString() << dendl;
@@ -429,6 +431,7 @@ void RocksDBStore::DumpStats() {
     string stats;
     db->GetProperty("rocksdb.stats", &stats);
     dout(0) << __func__ << " stats: " << stats << dendl;
+    dout(0) << __func__ << dbstats->ToString().c_str() << dendl;
 
 }
 

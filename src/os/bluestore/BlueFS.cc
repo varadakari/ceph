@@ -335,7 +335,18 @@ void BlueFS::_stop_alloc()
   }
   alloc.clear();
 }
+void BlueFS::DumpPerfStats()
+{
+  bufferlist bl; 
+  Formatter *f = Formatter::create("json-pretty");
+  //cct->get_perfcounters_collection()->dump_formatted(f, 0); 
+  logger->dump_formatted(f,0);
+  f->flush(bl);
+  delete f;
+  bl.append('\0');
+  derr << bl.c_str() << dendl;
 
+}
 int BlueFS::mount()
 {
   dout(1) << __func__ << dendl;
