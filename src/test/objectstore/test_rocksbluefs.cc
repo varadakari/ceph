@@ -162,6 +162,7 @@ bufferlist wal_buf, objmap_onode_buf;
 bufferlist header_onode_buf; //3k
 bool stop = false;
 bool kv_sync_queue = false;
+bool enable_trim = false;
 deque<KeyValueDB::Transaction> kv_queue, kv_committing;
 std::mutex kv_lock;
 std::mutex pglog_lock;
@@ -495,7 +496,7 @@ void generate_data_trx(KeyValueDB *db)
       t->set("O", onode_key, onode_buf);
       t->merge("b", off_key, bitmap_buf);
       t->merge("T", "bluestore_statfs", statfs_buf);
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      //std::this_thread::sleep_for(std::chrono::milliseconds(4));
       if (kv_sync_queue) {
 	std::unique_lock<std::mutex> l(kv_lock);
 	kv_queue.push_back(t);
@@ -525,7 +526,7 @@ void generate_objmap_trx(KeyValueDB *db)
       t->set("M", stringify(c_nid) + "_info" , pginfo_buf);
       t->set("O", onode_key, objmap_onode_buf);
       t->set("L", seq_key, wal_buf);
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      //std::this_thread::sleep_for(std::chrono::milliseconds(4));
       if (kv_sync_queue) {
 	std::unique_lock<std::mutex> l(kv_lock);
 	kv_queue.push_back(t);
@@ -541,7 +542,7 @@ void remove_wal_key_tx(KeyValueDB *db)
       sleep(1);
     }
     string seq_key;
-    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    //std::this_thread::sleep_for(std::chrono::milliseconds(4));
     get_wal_key(wseq, &seq_key);
     KeyValueDB::Transaction dt = db->get_transaction();
     dt->rm_single_key("L", seq_key);
@@ -570,7 +571,7 @@ void generate_header_trx(KeyValueDB *db)
       t->set("M", stringify(c_nid)+"."+stringify(cid)+"."+stringify(pglog_version), pglog_buf);
       t->set("M", stringify(c_nid) + "_info" , pginfo_buf);
       t->set("O", onode_key, header_onode_buf);
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      //std::this_thread::sleep_for(std::chrono::milliseconds(4));
       if (kv_sync_queue) {
         std::unique_lock<std::mutex> l(kv_lock);
 	kv_queue.push_back(t);
@@ -593,14 +594,12 @@ void generate_trim_trx(uint64_t cid, KeyValueDB *db)
 	  t->rmkey("M", stringify(c_nid)+"."+stringify(cid)+"."+stringify(prev));
 	  prev++;
 	}
-        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        //std::this_thread::sleep_for(std::chrono::milliseconds(4));
 	if (kv_sync_queue) {
           std::unique_lock<std::mutex> l(kv_lock);
 	  kv_queue.push_back(t);
 	} else {
-	  db->submit_transaction(t);
-	  KeyValueDB::Transaction dt = db->get_transaction();
-	  db->submit_transaction_sync(dt);
+	  db->submit_transaction_sync(t);
 	}
 	pg_trim[cid] += 100;
 	num_deletes += 100;
@@ -628,6 +627,7 @@ void trim_pglog(KeyValueDB *db)
  size_t sz = std::hash<std::thread::id>()(std::this_thread::get_id());
  struct stats a;
  a.num_ops = num_trims;
+ std::unique_lock<std::mutex> l(pglog_lock);
  stats_map[sz] = a;
  cout <<" Number of trims from " << sz << " : " << num_trims << std::endl;
 }
@@ -653,6 +653,7 @@ void write_data(KeyValueDB *db)
     struct stats a;
     a.num_ops = num_writes;
     a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + DATA_ONODE + BITMAP_BUF + STAT_BUF);
+    std::unique_lock<std::mutex> l(pglog_lock);
     stats_map[sz] = a;
     cout <<" Number of writes from " << sz << " : " << num_writes << std::endl;
 }
@@ -669,6 +670,7 @@ void write_objmap(KeyValueDB *db)
     struct stats a;
     a.num_ops = num_writes;
     a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + OBJMAP_ONODE + WAL_BUF);
+    std::unique_lock<std::mutex> l(pglog_lock);
     stats_map[sz] = a;
     cout <<" Number of obj map writes from " << sz << " : " << num_writes << std::endl;
 }
@@ -684,6 +686,7 @@ void trim_objmap(KeyValueDB *db)
     struct stats a;
     a.num_ops = num_wal_deletes;
     a.num_bytes = num_wal_deletes * WAL_BUF;
+    std::unique_lock<std::mutex> l(pglog_lock);
     stats_map[sz] = a;
     cout <<" Number of wal deletes from " << sz << " : " << num_wal_deletes << std::endl;
 }
@@ -699,6 +702,7 @@ void write_header(KeyValueDB *db)
     struct stats a;
     a.num_ops = num_writes;
     a.num_bytes = num_writes * (PGLOG_SIZE + PGINFO_SIZE + HEADER_ONODE);
+    std::unique_lock<std::mutex> l(pglog_lock);
     stats_map[sz] = a;
     cout <<" Number of header writes from " << sz << " : " << num_writes << std::endl;
 }
@@ -785,12 +789,14 @@ TEST(RocksBlueFS, test_1) {
     for (int i=0; i<NUM_HEADER_WRITERS; i++) {
       header_threads.push_back(std::thread(write_header, db));
     }
+#endif
 
     std::vector<std::thread> trim_threads;
-    for (int i=0; i<NUM_TRIMMERS; i++) {
-      trim_threads.push_back(std::thread(trim_pglog, db));
+    if (enable_trim) {
+      for (int i=0; i<NUM_TRIMMERS; i++) {
+	trim_threads.push_back(std::thread(trim_pglog, db));
+      }
     }
-#endif
 
     std::vector<std::thread> kv_threads;
     if (kv_sync_queue) {
@@ -807,8 +813,8 @@ TEST(RocksBlueFS, test_1) {
     join_all(objmap_threads);
     join_all(trim_objmap_threads);
     join_all(header_threads);
-    join_all(trim_threads);
 #endif
+    join_all(trim_threads);
     if (kv_sync_queue) {
       join_all(kv_threads);
     }
@@ -832,6 +838,7 @@ int main(int argc, char **argv) {
       ("help,h", "Help screen")
       ("runtime", po::value<uint16_t>()->default_value(120), "runtime")
       ("kvsync", po::value<bool>()->default_value(false), "KV Sync")
+      ("enable-trim", po::value<bool>()->default_value(false), "Enable trimming pg log entries")
       ("num-writers", po::value<int>()->default_value(16), "Num Writers")
       ("device", po::value<std::string>()->default_value("/dev/null"), "Device");
 
@@ -844,6 +851,10 @@ int main(int argc, char **argv) {
     if (vm.count("kvsync")) {
       kv_sync_queue = vm["kvsync"].as<bool>();
       std::cout << "Kv sync: " << kv_sync_queue << '\n';
+    }
+    if (vm.count("enable-trim")) {
+      enable_trim = vm["enable-trim"].as<bool>();
+      std::cout << "Enable trim: " << enable_trim << '\n';
     }
     if (vm.count("runtime")) {
       runtime = vm["runtime"].as<uint16_t>();
