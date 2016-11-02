@@ -83,35 +83,9 @@ KeyValueDB* createdb(BlueFS *fs)
     env = NULL;
     return NULL;
   }
-  //string options;
+  string options;
   stringstream err;
-#if 0
-  //options = g_conf->bluestore_rocksdb_options;
-  string options = ""
-			  "create_if_missing=true;"
-			  "max_write_buffer_number=16;"
-			  "max_background_compactions=4;"
-			  "stats_dump_period_sec = 5;"
-			  "min_write_buffer_number_to_merge = 3;"
-			  "level0_file_num_compaction_trigger = 4;"
-			  "compression = kNoCompression;"
-			  "recycle_log_file_num=16;";
-#endif
-  string options = ""
-			  "max_write_buffer_number=16;"
-			  "min_write_buffer_number_to_merge=2;"
-			  "recycle_log_file_num=16;"
-			  "compaction_threads=8;"
-			  "flusher_threads=4;"
-			  "max_background_compactions=8;"
-			  "max_background_flushes=4;"
-			  "max_bytes_for_level_base=5368709120;"
-			  "write_buffer_size=83886080;"
-			  "level0_file_num_compaction_trigger=2;"
-			  "level0_slowdown_writes_trigger=400;"
-			  "level0_stop_writes_trigger=800;"
-			  "compression = kNoCompression;"
-			  "stats_dump_period_sec=10;";
+  options = g_conf->bluestore_rocksdb_options;
   db->init(options);
   int r = db->create_and_open(err);
   if (r) {
@@ -241,20 +215,6 @@ void generate_buffers()
 
   header_onode_buf = gen_buffer_list(HEADER_ONODE);
 }
-
-#if 0
-void release_buffers()
-{
-  delete pglog_buf;
-  delete pginfo_buf;
-  delete onode_buf;
-  delete bitmap_buf;
-  delete statfs_buf;
-  delete objmap_onode_buf;
-  delete wal_buf;
-  delete header_onode_buf;
-}
-#endif
 
 static string pretty_binary_string(const string& in)
 {
@@ -831,6 +791,9 @@ TEST(RocksBlueFS, test_1) {
 }
 
 int main(int argc, char **argv) {
+  vector<string> ceph_option_strings;
+  po::variables_map vm;
+  po::options_description desc{"Options"};
   try 
   {
     po::options_description desc{"Options"};
@@ -842,10 +805,36 @@ int main(int argc, char **argv) {
       ("num-writers", po::value<int>()->default_value(16), "Num Writers")
       ("device", po::value<std::string>()->default_value("/dev/null"), "Device");
 
-    po::variables_map vm; 
-    po::store(parse_command_line(argc, argv, desc), vm);
+    po::parsed_options parsed = po::command_line_parser(argc, argv).options(desc).allow_unregistered().run();
+    po::store(parsed, vm);
     po::notify(vm);
 
+    ceph_option_strings = po::collect_unrecognized(parsed.options,po::include_positional);
+  } catch (const po::error &ex) {
+    std::cerr << ex.what() << '\n';
+    return -1;
+  }
+
+  vector<const char *> ceph_options, def_args;
+  ceph_options.reserve(ceph_option_strings.size());
+  for (vector<string>::iterator i = ceph_option_strings.begin();
+      i != ceph_option_strings.end();
+      ++i) {
+    ceph_options.push_back(i->c_str());
+  }
+
+  def_args.push_back("--debug-bluefs=0/0");
+  def_args.push_back("--debug-bdev=0/0");
+
+  global_init(&def_args, ceph_options, CEPH_ENTITY_TYPE_OSD, CODE_ENVIRONMENT_UTILITY, 0);
+  common_init_finish(g_ceph_context);
+
+  g_ceph_context->_conf->set_val(
+    "enable_experimental_unrecoverable_data_corrupting_features",
+    "*");
+  g_ceph_context->_conf->apply_changes(NULL);
+
+  {
     if (vm.count("help"))
       std::cout << desc << '\n';
     if (vm.count("kvsync")) {
@@ -869,28 +858,6 @@ int main(int argc, char **argv) {
       std::cout << "Num writers: " << num_writers << '\n';
     }
   }
-  catch (const po::error &ex)
-  {
-    std::cerr << ex.what() << '\n';
-    return -1;
-  }
-
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
-  env_to_vec(args);
-
-  vector<const char *> def_args;
-  def_args.push_back("--debug-bluefs=0/0");
-  def_args.push_back("--debug-bdev=0/0");
-
-  global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY,
-	      0);
-  common_init_finish(g_ceph_context);
-
-  g_ceph_context->_conf->set_val(
-    "enable_experimental_unrecoverable_data_corrupting_features",
-    "*");
-  g_ceph_context->_conf->apply_changes(NULL);
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
