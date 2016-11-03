@@ -1575,6 +1575,26 @@ void ReplicatedPG::get_src_oloc(const object_t& oid, const object_locator_t& olo
     src_oloc.key = oid.name;
 }
 
+bool ReplicatedPG::skip_filestore(OpRequestRef& op)
+{
+  bool flag = false;
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+ 	  MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
+	  m->finish_decode();
+	  m->clear_payload();
+	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
+		MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
+		reply->set_reply_versions(eversion_t(), 0);
+		reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+		reply->set_result(0);
+		reply->claim_op_out_data(m->ops);
+		m->get_connection()->send_message(reply);
+		flag = true;
+	  }
+  }
+  return flag;
+}
+
 void ReplicatedPG::do_request(
   OpRequestRef& op,
   ThreadPool::TPHandle &handle)
@@ -1970,6 +1990,13 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     }
   }
 
+  // patch 3 #78k-80k
+  if (FINJ(3, 0) < 0) {
+    if (skip_filestore(op)) 
+      return;
+  }
+
+
   ObjectContextRef obc;
   bool can_create = op->may_write() || op->may_cache();
   hobject_t missing_oid;
@@ -1986,10 +2013,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  //uint64_t start = Cycles::rdtsc();
   int r = find_object_context(
     oid, &obc, can_create,
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
     &missing_oid);
+  //uint64_t stop = Cycles::rdtsc();
 
   if (r == -EAGAIN) {
     // If we're not the primary of this OSD, and we have
@@ -2285,6 +2314,16 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+//patch 4
+//65k-66k 
+//After incresing the cache size to 2048 got 76k
+//need to the improvements for chaitanya on this.
+  if ((FINJ(4, 0) < 0) && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
+           reply_ctx(ctx, 0);
+           return;
+	  }
+  }
   op->mark_started();
   ctx->src_obc.swap(src_obc);
 
@@ -3287,6 +3326,13 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
   ceph_tid_t rep_tid = osd->get_tid();
 
   RepGather *repop = new_repop(ctx, obc, rep_tid);
+  //patch 5
+  if ((FINJ(5, 0) < 0) && op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+    if (m->ops[0].op.op == CEPH_OSD_OP_WRITE) {
+       reply_ctx(ctx, 0);
+       return;
+    }
+  }
 
   issue_repop(repop, ctx);
   eval_repop(repop);
@@ -8561,8 +8607,8 @@ void ReplicatedPG::op_applied(const eversion_t &applied_version)
   dout(10) << "op_applied version " << applied_version << dendl;
   if (applied_version == eversion_t())
     return;
-  assert(applied_version > last_update_applied);
-  assert(applied_version <= info.last_update);
+  //assert(applied_version > last_update_applied);
+  //assert(applied_version <= info.last_update);
   last_update_applied = applied_version;
   if (is_primary()) {
     if (scrubber.active) {
@@ -8680,9 +8726,19 @@ void ReplicatedPG::eval_repop(RepGather *repop)
     if (repop_queue.front() != repop) {
       dout(0) << " removing " << *repop << dendl;
       dout(0) << "   q front is " << *repop_queue.front() << dendl; 
-      assert(repop_queue.front() == repop);
+      //assert(repop_queue.front() == repop);
+#if 0
+      xlist<RepGather*>::iterator i = repop_queue.begin();
+      for (; !i.end(); ++i) {
+	if (*i == repop) {
+	  break;
+	}
+      }
+#endif
+      repop_queue.remove(&repop->queue_item);
+    } else {
+      repop_queue.pop_front();
     }
-    repop_queue.pop_front();
     remove_repop(repop);
   }
 }

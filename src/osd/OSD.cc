@@ -117,6 +117,7 @@
 #include "common/HeartbeatMap.h"
 #include "common/admin_socket.h"
 #include "common/ceph_context.h"
+#include "OSDFInj.h"
 
 #include "global/signal_handler.h"
 #include "global/pidfile.h"
@@ -2451,6 +2452,13 @@ void OSD::final_init()
     test_ops_hook,
     "inject metadata error to an object");
   assert(r == 0);
+   r = admin_socket->register_command(
+    "injecterror",
+    "injecterror " \
+    "name=cmd,type=CephString,n=N ",
+    test_ops_hook,
+    "inject error");
+  assert(r == 0);
   r = admin_socket->register_command(
     "set_recovery_delay",
     "set_recovery_delay " \
@@ -2711,6 +2719,7 @@ int OSD::shutdown()
   cct->get_admin_socket()->unregister_command("truncobj");
   cct->get_admin_socket()->unregister_command("injectdataerr");
   cct->get_admin_socket()->unregister_command("injectmdataerr");
+  cct->get_admin_socket()->unregister_command("injecterror");
   cct->get_admin_socket()->unregister_command("set_recovery_delay");
   delete test_ops_hook;
   test_ops_hook = NULL;
@@ -4479,6 +4488,7 @@ void OSD::check_ops_in_flight()
 //   truncobj <pool-id> [namespace/]<obj-name> <newlen>
 //   injectmdataerr [namespace/]<obj-name> [shardid]
 //   injectdataerr [namespace/]<obj-name> [shardid]
+//   injecterror  set/reset/dump trigger=val count=val sleep=val
 //
 //   set_recovery_delay [utime]
 void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
@@ -4606,6 +4616,10 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
     } else if (command == "injectmdataerr") {
       store->inject_mdata_error(gobj);
       ss << "ok";
+    } else if(command == "injecterror") {
+      ceph_handle_finj_cmd(cmdmap, ss);
+      ss << "ok";
+      return;
     }
     return;
   }
@@ -5441,6 +5455,11 @@ COMMAND("dump_pg_recovery_stats", "dump pg recovery statistics",
 	"osd", "r", "cli,rest")
 COMMAND("reset_pg_recovery_stats", "reset pg recovery statistics",
 	"osd", "rw", "cli,rest")
+COMMAND("injecterror " \
+       "name=injecterror_cmd,type=CephString,n=N",
+       "fault injection framework",
+       "osd", "rw", "cli,rest")
+
 };
 
 void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, bufferlist& data)
@@ -5519,6 +5538,23 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
     osd_lock.Unlock();
     r = cct->_conf->injectargs(args, &ss);
     osd_lock.Lock();
+  }
+  else if (prefix == "injecterror") {
+    vector<string> argsvec;
+    cmd_getval(cct, cmdmap, "injecterror_cmd", argsvec);
+
+    if (argsvec.empty()) {
+      r = -EINVAL;
+      ss << "ignoring empty injecterror args";
+      goto out;
+    }
+    string args = argsvec.front();
+    for (vector<string>::iterator a = ++argsvec.begin(); a != argsvec.end(); ++a)
+      args += " " + *a;
+    vector<string> finjcmd_vec;
+    get_str_vec(args, finjcmd_vec);
+    ceph_handle_finj_cmd(finjcmd_vec, ss);
+    goto out;
   }
   else if (prefix == "cluster_log") {
     vector<string> msg;
@@ -6259,6 +6295,29 @@ void OSD::dispatch_op(OpRequestRef op)
   }
 }
 
+bool OSD::skip_filestore(OpRequestRef& op)
+{
+  bool flag = false;
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+	  MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
+	  m->finish_decode();
+	  m->clear_payload();
+	  if (m->ops[0].op.op == CEPH_OSD_OP_WRITE || 
+	      m->ops[0].op.op == CEPH_OSD_OP_WRITEFULL ||
+	      m->ops[0].op.op == CEPH_OSD_OP_SETALLOCHINT) {
+                dout(0) << __func__ << " " << m->ops[0].op.op << dendl;
+		MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
+		reply->set_reply_versions(eversion_t(), 0);
+		reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+		reply->set_result(0);
+		reply->claim_op_out_data(m->ops);
+		m->get_connection()->send_message(reply);
+		flag = true;
+	  }
+  }
+  return flag;
+}
+
 bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
 {
   if (is_stopping()) {
@@ -6281,6 +6340,12 @@ bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
     }
     return false;
   }
+
+// Patch 1 maxing out on cpu reaching 170k
+  if (FINJ(1, 0) < 0) {
+    if (skip_filestore(op))
+      return true;
+  } 
 
   switch(op->get_req()->get_type()) {
   // client ops
@@ -8932,6 +8997,11 @@ void OSD::dequeue_op(
 	   << " " << *(op->get_req())
 	   << " pg " << *pg << dendl;
 
+  // patch 2 80k
+  if (FINJ(2, 0) < 0) {
+    if (skip_filestore(op))
+      return;
+  } 
   // share our map with sender, if they're old
   if (op->send_map_update) {
     Message *m = op->get_req();

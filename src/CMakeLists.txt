@@ -415,6 +415,7 @@ set(libcommon_files
   common/HTMLFormatter.cc
   common/HeartbeatMap.cc
   common/PluginRegistry.cc
+  common/FInj.cc
   common/ceph_fs.cc
   common/ceph_hash.cc
   common/ceph_strings.cc
