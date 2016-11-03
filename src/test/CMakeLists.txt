@@ -156,7 +156,7 @@ endif(WITH_KVS)
 
 # ceph_objectstore_bench
 add_executable(ceph_objectstore_bench objectstore_bench.cc)
-target_link_libraries(ceph_objectstore_bench global ${BLKID_LIBRARIES} os)
+target_link_libraries(ceph_objectstore_bench global ${BLKID_LIBRARIES} ${ALLOC_LIBS} os)
 
 if(${WITH_RADOSGW})
   # test_cors
