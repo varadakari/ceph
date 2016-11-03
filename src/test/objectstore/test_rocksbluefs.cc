@@ -137,6 +137,7 @@ bufferlist header_onode_buf; //3k
 bool stop = false;
 bool kv_sync_queue = false;
 bool enable_trim = false;
+bool delay= false;
 deque<KeyValueDB::Transaction> kv_queue, kv_committing;
 std::mutex kv_lock;
 std::mutex pglog_lock;
@@ -456,7 +457,9 @@ void generate_data_trx(KeyValueDB *db)
       t->set("O", onode_key, onode_buf);
       t->merge("b", off_key, bitmap_buf);
       t->merge("T", "bluestore_statfs", statfs_buf);
-      //std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      if (delay) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+      }
       if (kv_sync_queue) {
 	std::unique_lock<std::mutex> l(kv_lock);
 	kv_queue.push_back(t);
@@ -674,7 +677,7 @@ void kv_sync_thread(KeyValueDB *db)
     if (kv_queue.empty()) {
       if (stop)
 	break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      //std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     else {
       kv_lock.lock();
@@ -691,6 +694,7 @@ void kv_sync_thread(KeyValueDB *db)
       kv_committing.clear();
     }
   }
+  cout <<" Kv sync exiting" << std::endl;
 }
 
 
@@ -802,6 +806,7 @@ int main(int argc, char **argv) {
       ("runtime", po::value<uint16_t>()->default_value(120), "runtime")
       ("kvsync", po::value<bool>()->default_value(false), "KV Sync")
       ("enable-trim", po::value<bool>()->default_value(false), "Enable trimming pg log entries")
+      ("add-delay", po::value<bool>()->default_value(false), "Add delay to add new trx(effects kvsync)")
       ("num-writers", po::value<int>()->default_value(16), "Num Writers")
       ("device", po::value<std::string>()->default_value("/dev/null"), "Device");
 
@@ -844,6 +849,10 @@ int main(int argc, char **argv) {
     if (vm.count("enable-trim")) {
       enable_trim = vm["enable-trim"].as<bool>();
       std::cout << "Enable trim: " << enable_trim << '\n';
+    }
+    if (vm.count("add-delay")) {
+      delay = vm["add-delay"].as<bool>();
+      std::cout << "Add delay: " << delay << '\n';
     }
     if (vm.count("runtime")) {
       runtime = vm["runtime"].as<uint16_t>();
