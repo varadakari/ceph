@@ -4,6 +4,7 @@
 #include "BitmapFreelistManager.h"
 #include "kv/KeyValueDB.h"
 #include "kv.h"
+#include "kv/MergeOperator.h"
 
 #include "common/debug.h"
 
@@ -17,6 +18,7 @@ void make_offset_key(uint64_t offset, std::string *key)
   _key_encode_u64(offset, key);
 }
 
+#if 0
 struct XorMergeOperator : public KeyValueDB::MergeOperator {
   virtual void merge_nonexistent(
     const char *rdata, size_t rlen, std::string *new_value) override {
@@ -38,9 +40,11 @@ struct XorMergeOperator : public KeyValueDB::MergeOperator {
     return "bitwise_xor";
   }
 };
+#endif
 
 void BitmapFreelistManager::setup_merge_operator(KeyValueDB *db, string prefix)
 {
+  dout(4) << __func__ << dendl;
   ceph::shared_ptr<XorMergeOperator> merge_op(new XorMergeOperator);
   db->set_merge_operator(prefix, merge_op);
 }

@@ -31,6 +31,7 @@
 #include "BlueFS.h"
 #include "BlueRocksEnv.h"
 #include "auth/Crypto.h"
+#include "kv/MergeOperator.h"
 
 #define dout_subsys ceph_subsys_bluestore
 
@@ -466,6 +467,7 @@ static void get_wal_key(uint64_t seq, string *out)
 
 // merge operators
 
+#if 0
 struct Int64ArrayMergeOperator : public KeyValueDB::MergeOperator {
   virtual void merge_nonexistent(
     const char *rdata, size_t rlen, std::string *new_value) override {
@@ -492,6 +494,24 @@ struct Int64ArrayMergeOperator : public KeyValueDB::MergeOperator {
   }
 };
 
+struct GenericMergeOperator : public KeyValueDB::MergeOperator {
+  virtual void merge_nonexistent(
+    const char *rdata, size_t rlen, std::string *new_value) override {
+    *new_value = std::string(rdata, rlen);
+  }
+  virtual void merge(
+    const char *ldata, size_t llen,
+    const char *rdata, size_t rlen,
+    std::string *new_value) {
+      assert(0); // not implemented. we don't need for all prefixes
+    }
+  // We use each operator name and each prefix to construct the
+  // overall RocksDB operator name for consistency check at open time.
+  virtual string name() const {
+    return "Generic";
+  }
+};
+#endif
 
 // Buffer
 
@@ -3274,7 +3294,8 @@ int BlueStore::_open_db(bool create)
   string fn = path + "/db";
   string options;
   stringstream err;
-  ceph::shared_ptr<Int64ArrayMergeOperator> merge_op(new Int64ArrayMergeOperator);
+  //ceph::shared_ptr<Int64ArrayMergeOperator> merge_op(new Int64ArrayMergeOperator);
+  //ceph::shared_ptr<GenericMergeOperator> def_merge_op(new GenericMergeOperator);
 
   string kv_backend;
   if (create) {
@@ -3500,9 +3521,8 @@ int BlueStore::_open_db(bool create)
     return -EIO;
   }
 
-  FreelistManager::setup_merge_operators(db);
-  db->set_merge_operator(PREFIX_STAT, merge_op);
-
+  dout(5) << __func__ << " Setting up the merge operators" <<dendl;
+  //FreelistManager::setup_merge_operators(db);
   if (kv_backend == "rocksdb")
     options = g_conf->bluestore_rocksdb_options;
   db->init(options);
@@ -3521,6 +3541,7 @@ int BlueStore::_open_db(bool create)
     db = NULL;
     return -EIO;
   }
+
   dout(1) << __func__ << " opened " << kv_backend
 	  << " path " << fn << " options " << options << dendl;
   return 0;

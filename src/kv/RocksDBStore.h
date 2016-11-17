@@ -6,11 +6,13 @@
 #include "include/types.h"
 #include "include/buffer_fwd.h"
 #include "KeyValueDB.h"
+#include "MergeOperator.h"
 #include <set>
 #include <map>
 #include <string>
 #include <memory>
 #include <boost/scoped_ptr.hpp>
+#include "rocksdb/db.h"
 #include "rocksdb/write_batch.h"
 #include "rocksdb/perf_context.h"
 #include <errno.h>
@@ -53,6 +55,8 @@ namespace rocksdb{
   class Iterator;
   class Logger;
   struct Options;
+  struct ColumnFamilyDescriptor;
+  class ColumnFamilyHandle;
 }
 
 extern rocksdb::Logger *create_rocksdb_ceph_logger();
@@ -68,6 +72,10 @@ class RocksDBStore : public KeyValueDB {
   rocksdb::DB *db;
   rocksdb::Env *env;
   string options_str;
+  bool enable_cf; // only for bluestore
+  std::map<string, rocksdb::ColumnFamilyHandle*> cf_handles_; // will have different column families as per the prefix, some might see less traffic
+  std::vector<rocksdb::ColumnFamilyDescriptor> column_families_; // store the names to have a mapping
+
   int do_open(ostream &out, bool create_if_missing);
 
   // manage async compactions
@@ -90,6 +98,7 @@ class RocksDBStore : public KeyValueDB {
 
   void compact_range(const string& start, const string& end);
   void compact_range_async(const string& start, const string& end);
+
 
 public:
   /// compact the underlying rocksdb store
@@ -129,7 +138,16 @@ public:
     compact_thread(this),
     compact_on_mount(false),
     disableWAL(false)
-  {}
+  {
+    // if the backend is BlueStore, can create column families
+    // Mon also uses rocksdb as backend so we don't to create the cf for mon,
+    // it can use default one.
+    if (g_conf->osd_objectstore == "bluestore") {
+      enable_cf = true;
+    } else {
+      enable_cf = false;
+    }
+  }
 
   ~RocksDBStore();
 
@@ -233,7 +251,6 @@ public:
 
   };
 
-
   class RocksDBTransactionImpl : public KeyValueDB::TransactionImpl {
   public:
     rocksdb::WriteBatch bat;
@@ -279,10 +296,11 @@ public:
   class RocksDBWholeSpaceIteratorImpl :
     public KeyValueDB::WholeSpaceIteratorImpl {
   protected:
+    RocksDBStore *store;
     rocksdb::Iterator *dbiter;
   public:
-    explicit RocksDBWholeSpaceIteratorImpl(rocksdb::Iterator *iter) :
-      dbiter(iter) { }
+    explicit RocksDBWholeSpaceIteratorImpl(RocksDBStore *store_, rocksdb::Iterator *iter) :
+      store(store_), dbiter(iter) { }
     //virtual ~RocksDBWholeSpaceIteratorImpl() { }
     ~RocksDBWholeSpaceIteratorImpl();
 
@@ -307,9 +325,9 @@ public:
     rocksdb::DB *db;
     const rocksdb::Snapshot *snapshot;
   public:
-    RocksDBSnapshotIteratorImpl(rocksdb::DB *db, const rocksdb::Snapshot *s,
+    RocksDBSnapshotIteratorImpl(RocksDBStore *store, rocksdb::DB *db, const rocksdb::Snapshot *s,
 				rocksdb::Iterator *iter) :
-      RocksDBWholeSpaceIteratorImpl(iter), db(db), snapshot(s) { }
+      RocksDBWholeSpaceIteratorImpl(store, iter), db(db), snapshot(s) { }
 
     ~RocksDBSnapshotIteratorImpl();
   };
@@ -325,6 +343,10 @@ public:
   virtual int set_merge_operator(const std::string& prefix,
 				 std::shared_ptr<KeyValueDB::MergeOperator> mop);
   string assoc_name; ///< Name of associative operator
+  MergeOperatorRouter *merge_op;
+  void create_column_families(MergeOperatorRouter *merge_op, const rocksdb::Options& options);
+  void setup_cf_options(const string& prefix, MergeOperatorRouter* merge_op, const rocksdb::Options& options);
+  rocksdb::ColumnFamilyHandle* get_cf_handle(const string &prefix);
 
   virtual uint64_t get_estimated_size(map<string,uint64_t> &extra) {
     DIR *store_dir = opendir(path.c_str());

@@ -281,7 +281,7 @@ public:
     return -EOPNOTSUPP;
   }
 
-  virtual ~KeyValueDB() {}
+  virtual ~KeyValueDB() { }
 
   /// compact the underlying store
   virtual void compact() {}
