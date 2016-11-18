@@ -279,7 +279,6 @@ int RocksDBStore::do_open(ostream &out, bool create_if_missing)
   }
 
   auto cache = rocksdb::NewLRUCache(g_conf->rocksdb_cache_size, g_conf->rocksdb_cache_shard_bits);
-  rocksdb::BlockBasedTableOptions bbt_opts;
   bbt_opts.block_size = g_conf->rocksdb_block_size;
   bbt_opts.block_cache = cache;
   opt.table_factory.reset(rocksdb::NewBlockBasedTableFactory(bbt_opts));
@@ -429,9 +428,14 @@ int RocksDBStore::get_info_log_level(string info_log_level)
 
 void RocksDBStore::DumpStats() {
     string stats;
+    string out;
     db->GetProperty("rocksdb.stats", &stats);
+    db->GetProperty("rocksdb.cur-size-all-mem-tables", &out);
     dout(0) << __func__ << " stats: " << stats << dendl;
     dout(0) << __func__ << dbstats->ToString().c_str() << dendl;
+    dout(0) << __func__ << " Block cache usage: " << bbt_opts.block_cache->GetUsage() << dendl;
+    dout(0) << __func__ << " Block cache pinned blocks usage: " << bbt_opts.block_cache->GetPinnedUsage() << dendl;
+    dout(0) << __func__ << " All memtable usage: " << out << dendl;
 
 }
 

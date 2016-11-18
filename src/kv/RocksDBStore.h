@@ -13,6 +13,7 @@
 #include <boost/scoped_ptr.hpp>
 #include "rocksdb/write_batch.h"
 #include "rocksdb/statistics.h"
+#include "rocksdb/table.h"
 #include <errno.h>
 #include "common/errno.h"
 #include "common/dout.h"
@@ -49,6 +50,7 @@ namespace rocksdb{
   class Iterator;
   class Logger;
   struct Options;
+  struct BlockBasedTableOptions;
 }
 
 extern rocksdb::Logger *create_rocksdb_ceph_logger();
@@ -64,6 +66,7 @@ class RocksDBStore : public KeyValueDB {
   rocksdb::DB *db;
   rocksdb::Env *env;
   std::shared_ptr<rocksdb::Statistics> dbstats;
+  rocksdb::BlockBasedTableOptions bbt_opts;
   string options_str;
   int do_open(ostream &out, bool create_if_missing);
 
