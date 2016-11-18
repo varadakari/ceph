@@ -436,7 +436,6 @@ void RocksDBStore::DumpStats() {
     dout(0) << __func__ << " Block cache usage: " << bbt_opts.block_cache->GetUsage() << dendl;
     dout(0) << __func__ << " Block cache pinned blocks usage: " << bbt_opts.block_cache->GetPinnedUsage() << dendl;
     dout(0) << __func__ << " All memtable usage: " << out << dendl;
-
 }
 
 RocksDBStore::RocksDBTransactionImpl::RocksDBTransactionImpl(RocksDBStore *_db)

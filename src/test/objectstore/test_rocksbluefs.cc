@@ -694,7 +694,6 @@ void kv_sync_thread(KeyValueDB *db)
       kv_committing.clear();
     }
   }
-  cout <<" Kv sync exiting" << std::endl;
 }
 
 
