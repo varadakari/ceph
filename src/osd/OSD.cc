@@ -1935,6 +1935,9 @@ bool OSD::asok_command(string command, cmdmap_t& cmdmap, string format,
     f->dump_bool("success", success);
     f->dump_int("value", value);
     f->close_section();
+  } else if (command == "dump_bluefs") {
+    if (store->get_type() == "bluestore")
+      store->dump_bluefs();
   } else {
     assert(0 == "broken asok registration");
   }
@@ -2394,6 +2397,11 @@ void OSD::final_init()
 				     "get malloc extension heap property");
   assert(r == 0);
 
+  r = admin_socket->register_command("dump_bluefs",
+				     "dump_bluefs",
+				     asok_hook,
+				     "Dump bluefs contents to a location");
+  assert(r == 0);
 
   test_ops_hook = new TestOpsSocketHook(&(this->service), this->store);
   // Note: pools are CephString instead of CephPoolname because
@@ -2715,6 +2723,7 @@ int OSD::shutdown()
   cct->get_admin_socket()->unregister_command("get_latest_osdmap");
   cct->get_admin_socket()->unregister_command("set_heap_property");
   cct->get_admin_socket()->unregister_command("get_heap_property");
+  cct->get_admin_socket()->unregister_command("dump_bluefs");
   delete asok_hook;
   asok_hook = NULL;
 

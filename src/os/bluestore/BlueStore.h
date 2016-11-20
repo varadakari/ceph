@@ -1751,6 +1751,7 @@ public:
 
 public:
   int statfs(struct store_statfs_t *buf) override;
+  void dump_bluefs();
 
   bool exists(const coll_t& cid, const ghobject_t& oid) override;
   bool exists(CollectionHandle &c, const ghobject_t& oid) override;

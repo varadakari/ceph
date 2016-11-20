@@ -1494,6 +1494,7 @@ public:
   }
 
   virtual string get_type() = 0;
+  virtual void dump_bluefs() {}
 
   // mgmt
   virtual bool test_mount_in_use() = 0;

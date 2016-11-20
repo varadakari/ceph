@@ -2197,3 +2197,54 @@ int BlueFS::unlink(const string& dirname, const string& filename)
   _drop_link(file);
   return 0;
 }
+
+void BlueFS::dump_fs()
+{
+  dout(5) << __func__ <<dendl;
+  int r;
+  string outdir(g_conf->bluefs_dump_location);
+  vector<string> dirs;
+  r = readdir("", &dirs);
+  assert(r == 0);
+  for (auto& dir : dirs) {
+    if (dir[0] == '.')
+      continue;
+    dout(5) << dir << "/" << dendl;
+    vector<string> ls;
+    r = readdir(dir, &ls);
+    assert(r == 0);
+    string cmd = "mkdir -p " + outdir + "/" + dir;
+    r = system(cmd.c_str());
+    assert(r == 0);
+    for (auto& file : ls) {
+      if (file[0] == '.')
+	continue;
+      dout(5) << dir << "/" << file << dendl;
+      uint64_t size;
+      utime_t mtime;
+      r = stat(dir, file, &size, &mtime);
+      assert(r == 0);
+      string path = outdir + "/" + dir + "/" + file;
+      int fd = ::open(path.c_str(), O_CREAT|O_WRONLY|O_TRUNC, 0644);
+      assert(fd >= 0);
+      if (size > 0) {
+	FileReader *h;
+	r = open_for_read(dir, file, &h, false);
+	assert(r == 0);
+	int pos = 0;
+	int left = size;
+	while (left) {
+	  bufferlist bl;
+	  r = read(h, &h->buf, pos, left, &bl, NULL);
+	  assert(r > 0);
+	  int rc = bl.write_fd(fd);
+	  assert(rc == 0);
+	  pos += r;
+	  left -= r;
+	}
+	delete h;
+      }
+      ::close(fd);
+    }
+  }
+}
