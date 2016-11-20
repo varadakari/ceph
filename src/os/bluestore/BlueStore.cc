@@ -9065,6 +9065,12 @@ int BlueStore::_split_collection(TransContext *txc,
   return r;
 }
 
+void BlueStore::dump_bluefs()
+{
+  dout(5) << __func__ << dendl;
+  bluefs->dump_fs();
+}
+
 
 
 

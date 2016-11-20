@@ -2205,7 +2205,7 @@ void BlueFS::dump_fs()
 {
   dout(5) << __func__ <<dendl;
   int r;
-  string outdir("/tmp");
+  string outdir(g_conf->bluefs_dump_location);
   vector<string> dirs;
   r = readdir("", &dirs);
   assert(r == 0);
