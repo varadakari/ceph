@@ -2506,6 +2506,7 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     debug_read_error_lock("BlueStore::debug_read_error_lock"),
     csum_type(Checksummer::CSUM_CRC32C),
     sync_wal_apply(cct->_conf->bluestore_sync_wal_apply),
+    parallel_tx_apply(true),
     mempool_thread(this)
 {
   _init_logger();
@@ -6247,7 +6248,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	  assert(r == 0);
 	}
       }
-      {
+      if (parallel_tx_apply) {
+	_apply_kv_txc(txc);
+      } else {
 	std::lock_guard<std::mutex> l(kv_lock);
 	kv_queue.push_back(txc);
 	kv_cond.notify_one();
@@ -6593,6 +6596,96 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
   txc->allocated.clear();
   txc->released.clear();
   _txc_update_store_statfs(txc);
+}
+
+void BlueStore::_apply_kv_txc(TransContext *txc)
+{
+  dout(10) << __func__ << " start" << dendl;
+
+  utime_t start = ceph_clock_now(NULL);
+  alloc->commit_start();
+
+  // flush/barrier on block device
+  bdev->flush();
+
+  // we will use one final transaction to force a sync
+  KeyValueDB::Transaction synct = db->get_transaction();
+
+  // increase {nid,blobid}_max?  note that this covers both the
+  // case where we are approaching the max and the case we passed
+  // it.  in either case, we increase the max in the earlier txn
+  // we submit.
+  uint64_t new_nid_max = 0, new_blobid_max = 0;
+  if (nid_last + g_conf->bluestore_nid_prealloc/2 > nid_max) {
+	KeyValueDB::Transaction t = txc->t;
+	new_nid_max = nid_last + g_conf->bluestore_nid_prealloc;
+	bufferlist bl;
+	::encode(new_nid_max, bl);
+	t->set(PREFIX_SUPER, "nid_max", bl);
+	dout(10) << __func__ << " new_nid_max " << new_nid_max << dendl;
+      }
+      if (blobid_last + g_conf->bluestore_blobid_prealloc/2 > blobid_max) {
+	KeyValueDB::Transaction t = txc->t;
+	new_blobid_max = blobid_last + g_conf->bluestore_blobid_prealloc;
+	bufferlist bl;
+	::encode(new_blobid_max, bl);
+	t->set(PREFIX_SUPER, "blobid_max", bl);
+	dout(10) << __func__ << " new_blobid_max " << new_blobid_max << dendl;
+      }
+      assert(!txc->kv_submitted);
+      _txc_finalize_kv(txc, txc->t);
+      txc->log_state_latency(logger, l_bluestore_state_kv_queued_lat);
+      int r = db->submit_transaction(txc->t);
+      assert(r == 0);
+      --txc->osr->kv_committing_serially;
+      txc->kv_submitted = true;
+
+      vector<bluestore_pextent_t> bluefs_gift_extents;
+      if (bluefs) {
+	r = _balance_bluefs_freespace(&bluefs_gift_extents);
+	assert(r >= 0);
+	if (r > 0) {
+	  for (auto& p : bluefs_gift_extents) {
+	    bluefs_extents.insert(p.offset, p.length);
+	  }
+	  bufferlist bl;
+	  ::encode(bluefs_extents, bl);
+	  dout(10) << __func__ << " bluefs_extents now 0x" << std::hex
+		   << bluefs_extents << std::dec << dendl;
+	  synct->set(PREFIX_SUPER, "bluefs_extents", bl);
+	}
+      }
+
+      // submit synct synchronously (block and wait for it to commit)
+      r = db->submit_transaction_sync(synct);
+      assert(r == 0);
+
+      if (new_nid_max) {
+	nid_max = new_nid_max;
+	dout(10) << __func__ << " nid_max now " << nid_max << dendl;
+      }
+      if (new_blobid_max) {
+	blobid_max = new_blobid_max;
+	dout(10) << __func__ << " blobid_max now " << blobid_max << dendl;
+      }
+
+      utime_t finish = ceph_clock_now(NULL);
+      utime_t dur = finish - start;
+      dout(20) << __func__ << " committed " <<txc
+	       << " in " << dur << dendl;
+      _txc_state_proc(txc);
+      alloc->commit_finish();
+
+      // this is as good a place as any ...
+      _reap_collections();
+
+      if (bluefs) {
+	if (!bluefs_gift_extents.empty()) {
+	  _commit_bluefs_freespace(bluefs_gift_extents);
+	}
+      }
+
+  dout(10) << __func__ << " finish" << dendl;
 }
 
 void BlueStore::_kv_sync_thread()

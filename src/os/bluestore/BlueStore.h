@@ -1552,6 +1552,7 @@ private:
   uint64_t max_alloc_size; ///< maximum allocation unit (power of 2)
 
   bool sync_wal_apply;	  ///< see config option bluestore_sync_wal_apply
+  bool parallel_tx_apply;
 
   std::atomic<Compressor::CompressionMode> comp_mode = {Compressor::COMP_NONE}; ///< compression mode
   CompressorRef compressor;
@@ -1656,6 +1657,7 @@ private:
   void _txc_state_proc(TransContext *txc);
   void _txc_aio_submit(TransContext *txc);
   void _txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t);
+  void _apply_kv_txc(TransContext *txc);
 public:
   void _txc_aio_finish(void *p) {
     _txc_state_proc(static_cast<TransContext*>(p));
