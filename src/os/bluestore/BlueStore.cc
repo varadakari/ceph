@@ -2506,7 +2506,7 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     debug_read_error_lock("BlueStore::debug_read_error_lock"),
     csum_type(Checksummer::CSUM_CRC32C),
     sync_wal_apply(cct->_conf->bluestore_sync_wal_apply),
-    parallel_tx_apply(true),
+    parallel_tx_apply(cct->_conf->bluestore_submit_parallel_transaction),
     mempool_thread(this)
 {
   _init_logger();
