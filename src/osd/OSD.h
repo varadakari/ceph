@@ -222,6 +222,7 @@ class OpsFlightSocketHook;
 class HistoricOpsSocketHook;
 class TestOpsSocketHook;
 struct C_CompleteSplits;
+struct C_OpenPGs;
 class LogChannel;
 class CephContext;
 typedef ceph::shared_ptr<ObjectStore::Sequencer> SequencerRef;
@@ -891,17 +892,7 @@ public:
   void send_pg_temp();
 
   void queue_for_peering(PG *pg);
-  void queue_for_snap_trim(PG *pg) {
-    op_wq.queue(
-      make_pair(
-	pg,
-	PGQueueable(
-	  PGSnapTrim(pg->get_osdmap()->get_epoch()),
-	  cct->_conf->osd_snap_trim_cost,
-	  cct->_conf->osd_snap_trim_priority,
-	  ceph_clock_now(cct),
-	  entity_inst_t())));
-  }
+  void queue_for_snap_trim(PG *pg);
   void queue_for_scrub(PG *pg) {
     op_wq.queue(
       make_pair(
@@ -944,6 +935,7 @@ private:
 public:
   void start_recovery_op(PG *pg, const hobject_t& soid);
   void finish_recovery_op(PG *pg, const hobject_t& soid, bool dequeue);
+  bool is_recovery_active();
   void release_reserved_pushes(uint64_t pushes) {
     Mutex::Locker l(recovery_lock);
     assert(recovery_ops_reserved >= pushes);
@@ -1740,6 +1732,7 @@ private:
   friend class TestOpsSocketHook;
   TestOpsSocketHook *test_ops_hook;
   friend struct C_CompleteSplits;
+  friend struct C_OpenPGs;
 
   // -- op queue --
   enum io_queue {

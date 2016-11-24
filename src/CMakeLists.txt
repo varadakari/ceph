@@ -228,6 +228,20 @@ if(HAVE_XIO)
   list(APPEND EXTRALIBS ${XIO_LIBRARY} pthread rt)
 endif(HAVE_XIO)
 
+if(HAVE_RDMA)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${RDMA_INCLUDE_DIR}")
+  list(APPEND EXTRALIBS ${RDMA_LIBRARIES} pthread rt)
+endif(HAVE_RDMA)
+
+if(HAVE_DPDK)
+  set(CMAKE_CXX_FLAGS "-march=native ${CMAKE_CXX_FLAGS} -I${DPDK_INCLUDE_DIR}")
+  list(APPEND EXTRALIBS ${DPDK_LIBRARY})
+  if(NOT USE_CRYPTOPP)
+    message(FATAL_ERROR "CRYPTOPP must be supported when enable DPDK.")
+  endif(NOT USE_CRYPTOPP)
+  list(APPEND EXTRALIBS ${DPDK_LIBRARIES})
+endif(HAVE_DPDK)
+
 # sort out which allocator to use
 if(ALLOCATOR STREQUAL "tcmalloc")
   set(ALLOC_LIBS ${GPERFTOOLS_TCMALLOC_LIBRARY})
@@ -238,7 +252,7 @@ elseif(ALLOCATOR STREQUAL "tcmalloc_minimal")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
   set(TCMALLOC_srcs perfglue/disabled_heap_profiler.cc)
 elseif(ALLOCATOR STREQUAL "jemalloc")
-  set(ALLOC_LIBS jemalloc)
+  set(ALLOC_LIBS ${JEMALLOC_LIBRARY})
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
   set(TCMALLOC_srcs perfglue/disabled_heap_profiler.cc)
 elseif(ALLOCATOR STREQUAL "libc")
@@ -311,6 +325,33 @@ if(HAVE_XIO)
     msg/xio/QueueStrategy.cc)
 endif(HAVE_XIO)
 
+set(async_rdma_common_srcs)
+if(HAVE_RDMA)
+  list(APPEND async_rdma_common_srcs
+    msg/async/rdma/Infiniband.cc
+    msg/async/rdma/RDMAConnectedSocketImpl.cc
+    msg/async/rdma/RDMAServerSocketImpl.cc
+    msg/async/rdma/RDMAStack.cc)
+endif(HAVE_RDMA)
+
+set(dpdk_common_srcs)
+if(HAVE_DPDK)
+  list(APPEND dpdk_common_srcs
+    msg/async/dpdk/ARP.cc
+    msg/async/dpdk/DPDK.cc
+    msg/async/dpdk/dpdk_rte.cc
+    msg/async/dpdk/DPDKStack.cc
+    msg/async/dpdk/EventDPDK.cc
+    msg/async/dpdk/IP.cc
+    msg/async/dpdk/net.cc
+    msg/async/dpdk/IPChecksum.cc
+    msg/async/dpdk/Packet.cc
+    msg/async/dpdk/TCP.cc
+    msg/async/dpdk/UserspaceEvent.cc
+    msg/async/dpdk/ethernet.cc)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${DPDK_INCLUDE_DIR}")
+endif(HAVE_DPDK)
+
 if(HAVE_GOOD_YASM_ELF64)
   set(yasm_srcs
     common/crc32c_intel_fast_asm.S
@@ -346,6 +387,7 @@ set(libcommon_files
   common/io_priority.cc
   common/Clock.cc
   common/ceph_time.cc
+  common/mempool.cc
   common/Throttle.cc
   common/Timer.cc
   common/Finisher.cc
@@ -396,6 +438,8 @@ set(libcommon_files
   msg/async/PosixStack.cc
   msg/async/net_handler.cc
   ${xio_common_srcs}
+  ${async_rdma_common_srcs}
+  ${dpdk_common_srcs}
   msg/msg_types.cc
   common/hobject.cc
   osd/OSDMap.cc
@@ -438,6 +482,7 @@ set(libcommon_files
   common/TracepointProvider.cc
   common/Cycles.cc
   common/scrub_types.cc
+  common/bit_str.cc
   osdc/Striper.cc
   osdc/Objecter.cc
   common/Graylog.cc
@@ -538,14 +583,14 @@ if (WITH_MGR)
                  $<TARGET_OBJECTS:heap_profiler_objs>)
   target_include_directories(ceph-mgr PRIVATE "${PYTHON_INCLUDE_DIRS}")
   target_link_libraries(ceph-mgr mds osdc global
-      -lboost_python ${PYTHON_LIBRARIES} ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} ${TCMALLOC_LIBS})
+      -lboost_python ${PYTHON_LIBRARIES} ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} ${ALLOC_LIBS})
   install(TARGETS ceph-mgr DESTINATION bin)
 endif (WITH_MGR)
 
 set(librados_config_srcs
   librados-config.cc)
 add_executable(librados-config ${librados_config_srcs})
-target_link_libraries(librados-config librados global ${BLKID_LIBRARIES}
+target_link_libraries(librados-config librados global ${BLKID_LIBRARIES} ${RDMA_LIBRARIES}
   ${CMAKE_DL_LIBS})
 
 install(TARGETS librados-config DESTINATION bin)
@@ -650,6 +695,7 @@ else(WITH_CCACHE AND CCACHE_FOUND)
 endif(WITH_CCACHE AND CCACHE_FOUND)
 
 list(APPEND ROCKSDB_CMAKE_ARGS -DCMAKE_AR=${CMAKE_AR})
+list(APPEND ROCKSDB_CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE})
 
 # we use an external project and copy the sources to bin directory to ensure
 # that object files are built outside of the source tree.
@@ -686,7 +732,7 @@ set(ceph_osd_srcs
 add_executable(ceph-osd ${ceph_osd_srcs}
   $<TARGET_OBJECTS:common_util_obj>)
 add_dependencies(ceph-osd erasure_code_plugins)
-target_link_libraries(ceph-osd osd os global ${BLKID_LIBRARIES})
+target_link_libraries(ceph-osd osd os global ${BLKID_LIBRARIES} ${RDMA_LIBRARIES})
 if(WITH_FUSE)
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
 endif()
@@ -789,8 +835,8 @@ if(WITH_LIBCEPHFS)
     endforeach()
     set_target_properties(cephfs PROPERTIES
       OUTPUT_NAME cephfs
-      VERSION 1.0.0
-      SOVERSION 1
+      VERSION 2.0.0
+      SOVERSION 2
       LINK_FLAGS ${CEPHFS_LINK_FLAGS})
   endif(ENABLE_SHARED)
   install(TARGETS cephfs DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -855,6 +901,8 @@ if(WITH_RADOSGW)
   add_library(civetweb_common_objs OBJECT ${civetweb_common_files})
   target_include_directories(civetweb_common_objs PUBLIC
 	"${CMAKE_SOURCE_DIR}/src/civetweb/include")
+  set_property(TARGET civetweb_common_objs
+    APPEND PROPERTY COMPILE_DEFINITIONS USE_IPV6=1)
   if(HAVE_SSL)
     set_property(TARGET civetweb_common_objs
       APPEND PROPERTY COMPILE_DEFINITIONS NO_SSL_DL=1)

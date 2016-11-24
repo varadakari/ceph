@@ -16,12 +16,11 @@
 #define CEPH_MANTLE_H
 
 #include <lua.hpp>
-#include <list>
+#include <vector>
 #include <map>
+#include <string>
 
-#include "include/types.h"
-#include "common/Clock.h"
-#include "CInode.h"
+#include "mdstypes.h"
 
 class Mantle {
   protected:
@@ -31,10 +30,10 @@ class Mantle {
   public:
     Mantle() : L(NULL) {};
     int start();
-    int execute(string script);
-    int balance(string script,
+    int execute(const string &script);
+    int balance(const string &script,
                 mds_rank_t whoami,
-                vector < map<string, double> > metrics,
+                const vector < map<string, double> > &metrics,
                 map<mds_rank_t,double> &my_targets);
 };
 

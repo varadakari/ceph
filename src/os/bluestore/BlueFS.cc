@@ -13,6 +13,15 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "bluefs "
 
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::File, bluefs_file, bluefs);
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::Dir, bluefs_dir, bluefs);
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileWriter, bluefs_file_writer, bluefs);
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileReaderBuffer,
+			      bluefs_file_reader_buffer, bluefs);
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileReader, bluefs_file_reader, bluefs);
+MEMPOOL_DEFINE_OBJECT_FACTORY(BlueFS::FileLock, bluefs_file_lock, bluefs);
+
+
 BlueFS::BlueFS()
   : bdev(MAX_BDEV),
     ioc(MAX_BDEV),
@@ -853,7 +862,7 @@ int BlueFS::_read_random(
   int ret = 0;
   while (len > 0) {
     uint64_t x_off = 0;
-    vector<bluefs_extent_t>::iterator p = h->file->fnode.seek(off, &x_off);
+    auto p = h->file->fnode.seek(off, &x_off);
     uint64_t l = MIN(p->length - x_off, len);
     dout(20) << __func__ << " read buffered 0x"
              << std::hex << x_off << "~" << l << std::dec
@@ -905,8 +914,7 @@ int BlueFS::_read(
       buf->bl.clear();
       buf->bl_off = off & super.block_mask();
       uint64_t x_off = 0;
-      vector<bluefs_extent_t>::iterator p =
-	h->file->fnode.seek(buf->bl_off, &x_off);
+      auto p = h->file->fnode.seek(buf->bl_off, &x_off);
       uint64_t want = ROUND_UP_TO(len + (off & ~super.block_mask()),
 				  super.block_size);
       want = MAX(want, buf->max_prefetch);
@@ -968,7 +976,7 @@ void BlueFS::_invalidate_cache(FileRef f, uint64_t offset, uint64_t length)
     length = ROUND_UP_TO(length, super.block_size);
   }
   uint64_t x_off = 0;
-  vector<bluefs_extent_t>::iterator p = f->fnode.seek(offset, &x_off);
+  auto p = f->fnode.seek(offset, &x_off);
   while (length > 0 && p != f->fnode.extents.end()) {
     uint64_t x_len = MIN(p->length - x_off, length);
     bdev[p->bdev]->invalidate_cache(p->offset + x_off, x_len);
@@ -1075,7 +1083,7 @@ void BlueFS::_compact_log_sync()
   uint64_t need = bl.length() + g_conf->bluefs_max_log_runway;
   dout(20) << __func__ << " need " << need << dendl;
 
-  vector<bluefs_extent_t> old_extents;
+  mempool::bluefs::vector<bluefs_extent_t> old_extents;
   old_extents.swap(log_file->fnode.extents);
   while (log_file->fnode.get_allocated() < need) {
     int r = _allocate(log_file->fnode.prefer_bdev,
@@ -1197,7 +1205,7 @@ void BlueFS::_compact_log_async(std::unique_lock<std::mutex>& l)
   dout(10) << __func__ << " remove 0x" << std::hex << old_log_jump_to << std::dec
 	   << " of " << log_file->fnode.extents << dendl;
   uint64_t discarded = 0;
-  vector<bluefs_extent_t> old_extents;
+  mempool::bluefs::vector<bluefs_extent_t> old_extents;
   while (discarded < old_log_jump_to) {
     assert(!log_file->fnode.extents.empty());
     bluefs_extent_t& e = log_file->fnode.extents.front();
@@ -1484,7 +1492,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   dout(20) << __func__ << " file now " << h->file->fnode << dendl;
 
   uint64_t x_off = 0;
-  vector<bluefs_extent_t>::iterator p = h->file->fnode.seek(offset, &x_off);
+  auto p = h->file->fnode.seek(offset, &x_off);
   assert(p != h->file->fnode.extents.end());
   dout(20) << __func__ << " in " << *p << " x_off 0x"
            << std::hex << x_off << std::dec << dendl;
@@ -1711,7 +1719,8 @@ void BlueFS::flush_bdev()
   }
 }
 
-int BlueFS::_allocate(uint8_t id, uint64_t len, vector<bluefs_extent_t> *ev)
+int BlueFS::_allocate(uint8_t id, uint64_t len,
+		      mempool::bluefs::vector<bluefs_extent_t> *ev)
 {
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
            << " from " << (int)id << dendl;
@@ -1750,8 +1759,7 @@ int BlueFS::_allocate(uint8_t id, uint64_t len, vector<bluefs_extent_t> *ev)
   }
 
   int count = 0;
-  std::vector<AllocExtent> extents = 
-        std::vector<AllocExtent>(left / min_alloc_size);
+  AllocExtentVector extents = AllocExtentVector(left / min_alloc_size);
 
   r = alloc[id]->alloc_extents(left, min_alloc_size,
                                hint, &extents, &count);

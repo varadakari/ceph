@@ -67,7 +67,7 @@ int Mantle::start()
   return 0;
 }
 
-int Mantle::execute(string script)
+int Mantle::execute(const string &script)
 {
   if (L == NULL) {
     dout(0) << "ERROR: mantle was not started" << dendl;
@@ -93,9 +93,9 @@ int Mantle::execute(string script)
   return 0;
 }
 
-int Mantle::balance(string script,
+int Mantle::balance(const string &script,
                     mds_rank_t whoami,
-                    vector < map<string, double> > metrics,
+                    const vector < map<string, double> > &metrics,
                     map<mds_rank_t,double> &my_targets)
 {
   if (start() != 0)
@@ -114,7 +114,7 @@ int Mantle::balance(string script,
     lua_newtable(L);
 
     /* push values into this mds's table; setfield assigns key/pops val */
-    for (map<string, double>::iterator it = metrics[i].begin();
+    for (map<string, double>::const_iterator it = metrics[i].begin();
          it != metrics[i].end();
          it++) {
       lua_pushnumber(L, it->second);
@@ -143,15 +143,13 @@ int Mantle::balance(string script,
 
   /* fill in return value */
   mds_rank_t it = mds_rank_t(0);
-  lua_pushnil(L);
-  while (lua_next(L, -2) != 0) {
+  for (lua_pushnil(L); lua_next(L, -2); lua_pop(L, 1)) {
     if (!lua_isnumber(L, -1)) {
       dout(0) << "WARNING: mantle script returned a malformed response" << dendl;
       lua_close(L);
       return -EINVAL;
     }
     my_targets[it] = (lua_tonumber(L, -1));
-    lua_pop(L, 1);
     it++;
   }
 

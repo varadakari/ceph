@@ -14,6 +14,7 @@
 #include "rocksdb/write_batch.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/table.h"
+#include "rocksdb/perf_context.h"
 #include <errno.h>
 #include "common/errno.h"
 #include "common/dout.h"
@@ -36,6 +37,10 @@ enum {
   l_rocksdb_compact_range,
   l_rocksdb_compact_queue_merge,
   l_rocksdb_compact_queue_len,
+  l_rocksdb_write_wal_time,
+  l_rocksdb_write_memtable_time,
+  l_rocksdb_write_delay_time,
+  l_rocksdb_write_pre_and_post_process_time,
   l_rocksdb_last,
 };
 
@@ -49,8 +54,12 @@ namespace rocksdb{
   class WriteBatch;
   class Iterator;
   class Logger;
+  class ColumnFamilyHandle;
   struct Options;
   struct BlockBasedTableOptions;
+  struct DBOptions;
+  struct ColumnFamilyOptions;
+>>>>>>> wip-col-families
 }
 
 extern rocksdb::Logger *create_rocksdb_ceph_logger();
@@ -68,7 +77,10 @@ class RocksDBStore : public KeyValueDB {
   std::shared_ptr<rocksdb::Statistics> dbstats;
   rocksdb::BlockBasedTableOptions bbt_opts;
   string options_str;
-  int do_open(ostream &out, bool create_if_missing);
+  int create_db_dir();
+  int install_cf_mergeop(const string &cf_name, rocksdb::ColumnFamilyOptions *cf_opt);
+  int do_open(ostream &out, bool create_if_missing,
+	      const vector<ColumnFamily>* cfs = nullptr);
 
   // manage async compactions
   Mutex compact_queue_lock;
@@ -115,7 +127,6 @@ public:
   void compact_range_async(const string& prefix, const string& start, const string& end) {
     compact_range_async(combine_strings(prefix, start), combine_strings(prefix, end));
   }
-  int get_info_log_level(string info_log_level);
 
   RocksDBStore(CephContext *c, const string &path, void *p) :
     cct(c),
@@ -135,11 +146,16 @@ public:
 
   static bool check_omap_dir(string &omap_dir);
   /// Opens underlying db
-  int open(ostream &out) {
+  int open(ostream &out) override {
     return do_open(out, false);
   }
+  int open_with_cf(ostream &out, const vector<ColumnFamily>& cfs) override {
+    return do_open(out, false, &cfs);
+  }
   /// Creates underlying db if missing and opens it
-  int create_and_open(ostream &out);
+  int create_and_open(ostream &out) override;
+  int create_and_open_with_cf(ostream &out,
+			      const vector<ColumnFamily>& cfs) override;
 
   void close();
   struct  RocksWBHandler: public rocksdb::WriteBatch::Handler {
@@ -306,15 +322,26 @@ public:
     int status();
   };
 
-  class RocksDBSnapshotIteratorImpl : public RocksDBWholeSpaceIteratorImpl {
-    rocksdb::DB *db;
-    const rocksdb::Snapshot *snapshot;
+  class RocksDBCFIteratorImpl :
+    public KeyValueDB::ColumnFamilyIteratorImpl{
+  protected:
+    rocksdb::Iterator *dbiter;
   public:
-    RocksDBSnapshotIteratorImpl(rocksdb::DB *db, const rocksdb::Snapshot *s,
-				rocksdb::Iterator *iter) :
-      RocksDBWholeSpaceIteratorImpl(iter), db(db), snapshot(s) { }
+    explicit RocksDBCFIteratorImpl(rocksdb::Iterator *iter) :
+      dbiter(iter) { }
+    ~RocksDBCFIteratorImpl();
 
-    ~RocksDBSnapshotIteratorImpl();
+    int seek_to_first();
+    int seek_to_last();
+    int upper_bound(const string &after);
+    int lower_bound(const string &to);
+    bool valid();
+    int next();
+    int prev();
+    string key();
+    bufferlist value();
+    bufferptr value_as_ptr();
+    int status();
   };
 
   /// Utility
@@ -397,10 +424,8 @@ err:
 
 
 protected:
-  WholeSpaceIterator _get_iterator();
-
-  WholeSpaceIterator _get_snapshot_iterator();
-
+  WholeSpaceIterator _get_iterator() override;
+  ColumnFamilyIterator _get_cf_iterator(const std::string& cf_name) override;
 };
 
 

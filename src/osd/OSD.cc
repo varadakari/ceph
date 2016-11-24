@@ -1454,6 +1454,19 @@ void OSDService::queue_for_peering(PG *pg)
   peering_wq.queue(pg);
 }
 
+void OSDService::queue_for_snap_trim(PG *pg) {
+  dout(10) << "queueing " << *pg << " for snaptrim" << dendl;
+  op_wq.queue(
+    make_pair(
+      pg,
+      PGQueueable(
+	PGSnapTrim(pg->get_osdmap()->get_epoch()),
+	cct->_conf->osd_snap_trim_cost,
+	cct->_conf->osd_snap_trim_priority,
+	ceph_clock_now(cct),
+	entity_inst_t())));
+}
+
 
 // ====================================================================
 // OSD
@@ -1668,6 +1681,7 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   hbclient_messenger(hb_clientm),
   hb_front_server_messenger(hb_front_serverm),
   hb_back_server_messenger(hb_back_serverm),
+  daily_loadavg(0.0),
   heartbeat_thread(this),
   heartbeat_dispatcher(this),
   op_tracker(cct, cct->_conf->osd_enable_op_tracker,
@@ -2197,7 +2211,7 @@ int OSD::init()
       
       utime_t had_for = ceph_clock_now(cct) - had_map_since;
       osd_stat_t cur_stat = service.get_osd_stat();
-      cur_stat.fs_perf_stat = store->get_cur_stats();
+      cur_stat.os_perf_stat = store->get_cur_stats();
 
       MPGStats *m = new MPGStats(monc->get_fsid(), osdmap->get_epoch(), had_for);
       m->osd_stat = cur_stat;
@@ -4922,9 +4936,12 @@ void OSD::_preboot(epoch_t oldest, epoch_t newest)
   // if our map within recent history, try to add ourselves to the osdmap.
   if (osdmap->test_flag(CEPH_OSDMAP_NOUP)) {
     dout(5) << "osdmap NOUP flag is set, waiting for it to clear" << dendl;
-  } else if (!osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE) &&
-	     !store->can_sort_nibblewise()) {
-    dout(1) << "osdmap SORTBITWISE flag is NOT set but our backend does not support nibblewise sort" << dendl;
+  } else if (!osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE)) {
+    dout(1) << "osdmap SORTBITWISE OSDMap flag is NOT set; please set it"
+	    << dendl;
+  } else if (!osdmap->test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
+    dout(1) << "osdmap REQUIRE_JEWEL OSDMap flag is NOT set; please set it"
+	    << dendl;
   } else if (osdmap->get_num_up_osds() &&
 	     (osdmap->get_up_osd_features() & CEPH_FEATURE_HAMMER_0_94_4) == 0) {
     dout(1) << "osdmap indicates one or more pre-v0.94.4 hammer OSDs is running"
@@ -5194,7 +5211,7 @@ void OSD::send_pg_stats(const utime_t &now)
 
   osd_stat_t cur_stat = service.get_osd_stat();
 
-  cur_stat.fs_perf_stat = store->get_cur_stats();
+  cur_stat.os_perf_stat = store->get_cur_stats();
 
   pg_stat_queue_lock.Lock();
 
@@ -6582,6 +6599,11 @@ void OSD::sched_scrub()
 	break;
       }
 
+      if (!cct->_conf->osd_scrub_during_recovery && service.is_recovery_active()) {
+        dout(10) << __func__ << "not scheduling scrub of " << scrub.pgid << " due to active recovery ops" << dendl;
+        break;
+      }
+
       PG *pg = _lookup_lock_pg(scrub.pgid);
       if (!pg)
 	continue;
@@ -7094,12 +7116,12 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
 	       osd_markdown_log.front() + grace < now)
 	  osd_markdown_log.pop_front();
 	if ((int)osd_markdown_log.size() > g_conf->osd_max_markdown_count) {
-	  dout(10) << __func__ << " marked down "
-		   << osd_markdown_log.size()
-		   << " > osd_max_markdown_count "
-		   << g_conf->osd_max_markdown_count
-		   << " in last " << grace << " seconds, shutting down"
-		   << dendl;
+	  dout(0) << __func__ << " marked down "
+		  << osd_markdown_log.size()
+		  << " > osd_max_markdown_count "
+		  << g_conf->osd_max_markdown_count
+		  << " in last " << grace << " seconds, shutting down"
+		  << dendl;
 	  do_restart = false;
 	  do_shutdown = true;
 	}
@@ -7115,18 +7137,21 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
+          dout(0) << __func__ << " marked down: rebind failed" << dendl;
         }
 
 	r = hb_back_server_messenger->rebind(avoid_ports);
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
+          dout(0) << __func__ << " marked down: rebind failed" << dendl;
         }
 
 	r = hb_front_server_messenger->rebind(avoid_ports);
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
+          dout(0) << __func__ << " marked down: rebind failed" << dendl;
         }
 
 	hbclient_messenger->mark_down_all();
@@ -7741,13 +7766,17 @@ PG::RecoveryCtx OSD::create_context()
 struct C_OpenPGs : public Context {
   set<PGRef> pgs;
   ObjectStore *store;
-  C_OpenPGs(set<PGRef>& p, ObjectStore *s) : store(s) {
+  OSD *osd;
+  C_OpenPGs(set<PGRef>& p, ObjectStore *s, OSD* o) : store(s), osd(o) {
     pgs.swap(p);
   }
   void finish(int r) {
+    RWLock::RLocker l(osd->pg_map_lock);
     for (auto p : pgs) {
-      p->ch = store->open_collection(p->coll);
-      assert(p->ch);
+      if (osd->pg_map.count(p->info.pgid)) {
+        p->ch = store->open_collection(p->coll);
+        assert(p->ch);
+      }
     }
   }
 };
@@ -7757,7 +7786,7 @@ void OSD::dispatch_context_transaction(PG::RecoveryCtx &ctx, PG *pg,
 {
   if (!ctx.transaction->empty()) {
     if (!ctx.created_pgs.empty()) {
-      ctx.on_applied->add(new C_OpenPGs(ctx.created_pgs, store));
+      ctx.on_applied->add(new C_OpenPGs(ctx.created_pgs, store, this));
     }
     int tr = store->queue_transaction(
       pg->osr.get(),
@@ -7793,7 +7822,7 @@ void OSD::dispatch_context(PG::RecoveryCtx &ctx, PG *pg, OSDMapRef curmap,
     assert(ctx.created_pgs.empty());
   } else {
     if (!ctx.created_pgs.empty()) {
-      ctx.on_applied->add(new C_OpenPGs(ctx.created_pgs, store));
+      ctx.on_applied->add(new C_OpenPGs(ctx.created_pgs, store, this));
     }
     int tr = store->queue_transaction(
       pg->osr.get(),
@@ -8056,9 +8085,7 @@ void OSD::handle_pg_trim(OpRequestRef op)
   } else {
     // primary is instructing us to trim
     ObjectStore::Transaction t;
-    PG::PGLogEntryHandler handler;
-    pg->pg_log.trim(&handler, m->trim_to, pg->info);
-    handler.apply(pg, &t);
+    pg->pg_log.trim(m->trim_to, pg->info);
     pg->dirty_info = true;
     pg->write_if_dirty(t);
     int tr = store->queue_transaction(pg->osr.get(), std::move(t), NULL);
@@ -8553,6 +8580,14 @@ void OSDService::finish_recovery_op(PG *pg, const hobject_t& soid, bool dequeue)
 #endif
 
   _maybe_queue_recovery();
+}
+
+bool OSDService::is_recovery_active()
+{
+  if (recovery_ops_active > 0)
+    return true;
+
+  return false;
 }
 
 // =========================================================

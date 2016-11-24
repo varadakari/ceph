@@ -136,7 +136,7 @@ void Mgr::background_init()
 
   finisher.start();
 
-  finisher.queue(new C_StdFunction([this](){
+  finisher.queue(new FunctionContext([this](int r){
     init();
   }));
 }
@@ -148,7 +148,11 @@ void Mgr::init()
   assert(!initialized);
 
   // Start communicating with daemons to learn statistics etc
-  server.init(monc->get_global_id(), client_messenger->get_myaddr());
+  int r = server.init(monc->get_global_id(), client_messenger->get_myaddr());
+  if (r < 0) {
+    derr << "Initialize server fail"<< dendl;
+    return;
+  }
   dout(4) << "Initialized server at " << server.get_myaddr() << dendl;
 
   // Preload all daemon metadata (will subsequently keep this

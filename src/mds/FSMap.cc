@@ -50,7 +50,7 @@ void FSMap::dump(Formatter *f) const
   f->close_section();
 
   f->open_array_section("filesystems");
-  for (const auto fs : filesystems) {
+  for (const auto &fs : filesystems) {
     f->open_object_section("filesystem");
     fs.second->dump(f);
     f->close_section();
@@ -109,7 +109,7 @@ void FSMap::print(ostream& out) const
 
 
 
-void FSMap::print_summary(Formatter *f, ostream *out)
+void FSMap::print_summary(Formatter *f, ostream *out) const
 {
   map<mds_role_t,string> by_rank;
   map<string,int> by_state;

@@ -6,7 +6,7 @@ if test -e build; then
 fi
 mkdir build
 cd build
-cmake -DALLOCATOR=jemalloc "$@" ..
+cmake -DBOOST_J=$(nproc) -DALLOCATOR=jemalloc "$@" ..
 
 # minimal config to find plugins
 cat <<EOF > ceph.conf

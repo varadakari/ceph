@@ -479,7 +479,7 @@ void PGMonitor::encode_pending(MonitorDBStore::TransactionRef t)
   assert(get_last_committed() + 1 == version);
   pending_inc.stamp = ceph_clock_now(g_ceph_context);
 
-  uint64_t features = mon->get_quorum_features();
+  uint64_t features = mon->get_quorum_con_features();
 
   string prefix = pgmap_meta_prefix;
 
@@ -1678,8 +1678,6 @@ void PGMonitor::get_health(list<pair<health_status_t,string> >& summary,
       note["peering"] += p->second;
     if (p->first & PG_STATE_REPAIR)
       note["repair"] += p->second;
-    if (p->first & PG_STATE_SPLITTING)
-      note["splitting"] += p->second;
     if (p->first & PG_STATE_RECOVERING)
       note["recovering"] += p->second;
     if (p->first & PG_STATE_RECOVERY_WAIT)
@@ -1777,7 +1775,6 @@ void PGMonitor::get_health(list<pair<health_status_t,string> >& summary,
 	                        PG_STATE_INCONSISTENT |
 	                        PG_STATE_PEERING |
 	                        PG_STATE_REPAIR |
-	                        PG_STATE_SPLITTING |
 	                        PG_STATE_RECOVERING |
 	                        PG_STATE_RECOVERY_WAIT |
 	                        PG_STATE_INCOMPLETE |
