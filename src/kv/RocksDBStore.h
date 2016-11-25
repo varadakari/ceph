@@ -59,7 +59,6 @@ namespace rocksdb{
   struct BlockBasedTableOptions;
   struct DBOptions;
   struct ColumnFamilyOptions;
->>>>>>> wip-col-families
 }
 
 extern rocksdb::Logger *create_rocksdb_ceph_logger();
