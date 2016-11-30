@@ -1476,9 +1476,10 @@ public:
 
   struct KVSyncThread : public Thread {
     BlueStore *store;
-    explicit KVSyncThread(BlueStore *s) : store(s) {}
+    int index;
+    explicit KVSyncThread(BlueStore *s, int id) : store(s), index(id) {}
     void *entry() {
-      store->_kv_sync_thread();
+      store->_kv_sync_thread(index);
       return NULL;
     }
   };
@@ -1522,14 +1523,19 @@ private:
   int m_finisher_num;
   vector<Finisher*> finishers;
 
-  KVSyncThread kv_sync_thread;
+  int m_kv_sync_threads;
+  vector<KVSyncThread*> kv_sync_threads;
   std::mutex kv_lock;
-  std::condition_variable kv_cond, kv_sync_cond;
   bool kv_stop;
-  deque<TransContext*> kv_queue;             ///< ready, already submitted
-  deque<TransContext*> kv_queue_unsubmitted; ///< ready, need submit by kv thread
-  deque<TransContext*> kv_committing;        ///< currently syncing
-  deque<TransContext*> wal_cleanup_queue;    ///< wal done, ready for cleanup
+  std::condition_variable kv_cond, kv_sync_cond;
+  typedef deque<TransContext*> kv_queue_t;             ///< ready, already submitted
+  typedef deque<TransContext*> kv_queue_unsubmitted_t; ///< ready, need submit by kv thread
+  typedef deque<TransContext*> kv_committing_t;        ///< currently syncing
+  typedef deque<TransContext*> wal_cleanup_queue_t;    ///< wal done, ready for cleanup
+  vector<kv_queue_t>  kv_queue;
+  vector<kv_queue_unsubmitted_t> kv_queue_unsubmitted;
+  vector<kv_committing_t> kv_committing;
+  vector<wal_cleanup_queue_t> wal_cleanup_queue;
 
   PerfCounters *logger;
 
@@ -1669,14 +1675,16 @@ private:
 
   void _osr_reap_done(OpSequencer *osr);
 
-  void _kv_sync_thread();
+  void _kv_sync_thread(int index);
   void _kv_stop() {
     {
       std::lock_guard<std::mutex> l(kv_lock);
       kv_stop = true;
       kv_cond.notify_all();
     }
-    kv_sync_thread.join();
+    for (auto kv : kv_sync_threads) {
+      kv->join();
+    }
     {
       std::lock_guard<std::mutex> l(kv_lock);
       kv_stop = false;

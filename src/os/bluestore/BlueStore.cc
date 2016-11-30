@@ -30,6 +30,7 @@
 #include "BlueFS.h"
 #include "BlueRocksEnv.h"
 #include "auth/Crypto.h"
+#include "include/btree_interval_set.h"
 
 #define dout_subsys ceph_subsys_bluestore
 
@@ -2500,7 +2501,7 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
 	     cct->_conf->bluestore_wal_thread_suicide_timeout,
 	     &wal_tp),
     m_finisher_num(1),
-    kv_sync_thread(this),
+    //kv_sync_thread(this),
     kv_stop(false),
     logger(NULL),
     debug_read_error_lock("BlueStore::debug_read_error_lock"),
@@ -2521,6 +2522,15 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     oss << "finisher-" << i;
     Finisher *f = new Finisher(cct, oss.str(), "finisher");
     finishers.push_back(f);
+  }
+  m_kv_sync_threads = cct->_conf->bluestore_num_kv_sync_threads;
+  for (int i = 0; i < m_kv_sync_threads; ++i) {
+    KVSyncThread *kv  = new KVSyncThread(this, i);
+    kv_sync_threads.push_back(kv);
+    kv_queue.push_back(deque<TransContext*>());
+    kv_committing.push_back(deque<TransContext*>());
+    kv_queue_unsubmitted.push_back(deque<TransContext*>());
+    wal_cleanup_queue.push_back(deque<TransContext*>());
   }
 }
 
@@ -4040,7 +4050,10 @@ int BlueStore::mount()
     f->start();
   }
   wal_tp.start();
-  kv_sync_thread.create("bstore_kv_sync");
+
+  for (auto kv : kv_sync_threads) {
+    kv->create("bstore_kv_sync");
+  }
 
   r = _wal_replay();
   if (r < 0)
@@ -4671,10 +4684,13 @@ void BlueStore::_sync()
   bdev->flush();
 
   std::unique_lock<std::mutex> l(kv_lock);
-  while (!kv_committing.empty() ||
-	 !kv_queue.empty()) {
-    dout(20) << " waiting for kv to commit" << dendl;
-    kv_sync_cond.wait(l);
+  //TODO: fix the cond
+  for (int i = 0; i< m_kv_sync_threads; i++) {
+    while (!kv_committing[i].empty() ||
+	  !kv_queue[i].empty()) {
+      dout(20) << " waiting for kv to commit" << dendl;
+      kv_sync_cond.wait(l);
+    }
   }
 
   dout(10) << __func__ << " done" << dendl;
@@ -6254,10 +6270,11 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       }
       {
 	std::lock_guard<std::mutex> l(kv_lock);
-	kv_queue.push_back(txc);
-	kv_cond.notify_one();
+	unsigned shard = txc->osr->parent->shard_hint.hash_to_shard(m_kv_sync_threads);
+	kv_queue[shard].push_back(txc);
+	kv_cond.notify_all();// TODO:notify the correct thread here
 	if (txc->state != TransContext::STATE_KV_SUBMITTED) {
-	  kv_queue_unsubmitted.push_back(txc);
+	  kv_queue_unsubmitted[shard].push_back(txc);
 	  ++txc->osr->kv_committing_serially;
 	}
       }
@@ -6586,6 +6603,7 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
 
 void BlueStore::_txc_release_alloc(TransContext *txc)
 {
+ #if 0
   // update allocator with full released set
   if (!g_conf->bluestore_debug_no_reuse_blocks) {
     for (interval_set<uint64_t>::iterator p = txc->released.begin();
@@ -6597,15 +6615,18 @@ void BlueStore::_txc_release_alloc(TransContext *txc)
 
   txc->allocated.clear();
   txc->released.clear();
+#endif
+  txc->allocated.clear();
 }
 
-void BlueStore::_kv_sync_thread()
+void BlueStore::_kv_sync_thread(int index)
 {
-  dout(10) << __func__ << " start" << dendl;
+  dout(10) << __func__ << " start " << " index: " << index << dendl;
   std::unique_lock<std::mutex> l(kv_lock);
+  btree_interval_set<uint64_t> free_extents;
   while (true) {
-    assert(kv_committing.empty());
-    if (kv_queue.empty() && wal_cleanup_queue.empty()) {
+    assert((kv_committing.empty() || kv_committing[index].empty()));
+    if (kv_queue[index].empty() && wal_cleanup_queue[index].empty()) {
       if (kv_stop)
 	break;
       dout(20) << __func__ << " sleep" << dendl;
@@ -6615,20 +6636,20 @@ void BlueStore::_kv_sync_thread()
     } else {
       deque<TransContext*> kv_submitting;
       deque<TransContext*> wal_cleaning;
-      dout(20) << __func__ << " committing " << kv_queue.size()
-	       << " submitting " << kv_queue_unsubmitted.size()
-	       << " cleaning " << wal_cleanup_queue.size() << dendl;
-      kv_committing.swap(kv_queue);
-      kv_submitting.swap(kv_queue_unsubmitted);
-      wal_cleaning.swap(wal_cleanup_queue);
+      dout(20) << __func__ << " committing " << kv_queue[index].size()
+	       << " submitting " << kv_queue_unsubmitted[index].size()
+	       << " cleaning " << wal_cleanup_queue[index].size() << dendl;
+      kv_committing[index].swap(kv_queue[index]);
+      kv_submitting.swap(kv_queue_unsubmitted[index]);
+      wal_cleaning.swap(wal_cleanup_queue[index]);
       utime_t start = ceph_clock_now(NULL);
       l.unlock();
 
-      dout(30) << __func__ << " committing txc " << kv_committing << dendl;
+      dout(30) << __func__ << " committing txc " << kv_committing[index] << dendl;
       dout(30) << __func__ << " submitting txc " << kv_submitting << dendl;
       dout(30) << __func__ << " wal_cleaning txc " << wal_cleaning << dendl;
 
-      alloc->commit_start();
+      //alloc->commit_start();
 
       // flush/barrier on block device
       bdev->flush();
@@ -6663,12 +6684,20 @@ void BlueStore::_kv_sync_thread()
 	assert(txc->state == TransContext::STATE_KV_QUEUED);
 	_txc_finalize_kv(txc, txc->t);
 	txc->log_state_latency(logger, l_bluestore_state_kv_queued_lat);
+              //insert in a single list
+         //free_extents.insert(txc->released);
+	for (interval_set<uint64_t>::iterator p = txc->released.begin();
+	p != txc->released.end(); ++p) {
+		free_extents.insert(p.get_start(), p.get_len());
+	}
+
+        txc->released.clear();
 	int r = db->submit_transaction(txc->t);
 	assert(r == 0);
 	--txc->osr->kv_committing_serially;
 	txc->state = TransContext::STATE_KV_SUBMITTED;
       }
-      for (auto txc : kv_committing) {
+      for (auto txc : kv_committing[index]) {
 	_txc_release_alloc(txc);
 	if (txc->had_ios) {
 	  --txc->osr->txc_with_unstable_io;
@@ -6719,14 +6748,14 @@ void BlueStore::_kv_sync_thread()
 
       utime_t finish = ceph_clock_now(NULL);
       utime_t dur = finish - start;
-      dout(20) << __func__ << " committed " << kv_committing.size()
+      dout(20) << __func__ << " committed " << kv_committing[index].size()
 	       << " cleaned " << wal_cleaning.size()
 	       << " in " << dur << dendl;
-      while (!kv_committing.empty()) {
-	TransContext *txc = kv_committing.front();
+      while (!kv_committing[index].empty()) {
+	TransContext *txc = kv_committing[index].front();
 	assert(txc->state == TransContext::STATE_KV_SUBMITTED);
 	_txc_state_proc(txc);
-	kv_committing.pop_front();
+	kv_committing[index].pop_front();
       }
       while (!wal_cleaning.empty()) {
 	TransContext *txc = wal_cleaning.front();
@@ -6734,7 +6763,13 @@ void BlueStore::_kv_sync_thread()
 	wal_cleaning.pop_front();
       }
 
-      alloc->commit_finish();
+      //alloc->commit_finish();
+      for (btree_interval_set<uint64_t>::iterator p = free_extents.begin();
+       p != free_extents.end(); ++p) {
+              alloc->init_add_free(p.get_start(), p.get_len());
+      }
+
+      free_extents.clear();
 
       // this is as good a place as any ...
       _reap_collections();
@@ -6802,8 +6837,10 @@ int BlueStore::_wal_finish(TransContext *txc)
   std::lock_guard<std::mutex> l(kv_lock);
   txc->state = TransContext::STATE_WAL_CLEANUP;
   txc->osr->qcond.notify_all();
-  wal_cleanup_queue.push_back(txc);
-  kv_cond.notify_one();
+  //TODO: wal cleanup also has to go through correct queue
+  unsigned shard = txc->osr->parent->shard_hint.hash_to_shard(m_kv_sync_threads);
+  wal_cleanup_queue[shard].push_back(txc);
+  kv_cond.notify_all(); // multiple queues, so notify all
   return 0;
 }
 
