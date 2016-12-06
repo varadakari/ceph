@@ -6168,6 +6168,7 @@ uint64_t BlueStore::_assign_blobid(TransContext *txc)
 void BlueStore::get_db_statistics(Formatter *f)
 {
   db->get_statistics(f);
+  dump_kvdb();
 }
 
 BlueStore::TransContext *BlueStore::_txc_create(OpSequencer *osr)
@@ -8959,7 +8960,61 @@ int BlueStore::_split_collection(TransContext *txc,
   return r;
 }
 
+void BlueStore::dump_kvdb()
+{
 
+  uint64_t num_onodes = 0;
+  uint64_t num_shards = 0;
+  uint64_t num_super = 0;
+  uint64_t num_coll = 0;
+  uint64_t num_omap = 0;
+  uint64_t num_wal = 0;
+  uint64_t num_alloc = 0;
+  uint64_t num_stat = 0;
+  uint64_t num_others = 0;
 
+  utime_t start = ceph_clock_now(NULL);
 
+  KeyValueDB::WholeSpaceIterator iter = db->get_iterator();
+  iter->seek_to_first();
+  dout(0) << __func__ << " iter valid: " << iter->valid() << dendl;
+  while (iter->valid()) {
+    pair<string,string> key(iter->raw_key());
+    if (key.first == PREFIX_SUPER)
+        num_super++;
+    else if (key.first == PREFIX_STAT)
+      num_stat++;
+    else if (key.first == PREFIX_COLL)
+      num_coll++;
+    else if (key.first == PREFIX_OBJ)
+      num_onodes++;
+    else if (key.first == PREFIX_OMAP)
+      num_omap++;
+    else if (key.first == PREFIX_WAL)
+      num_wal++;
+    else if (key.first == PREFIX_ALLOC || key.first == "b" )
+      num_alloc++;
+    else if (key.first == PREFIX_SHARED_BLOB)
+      num_shards++;
+    else
+      num_others++;
+
+    //dout(0) << __func__  << key.first << " / " << key.second << dendl;
+    //dout(0) << __func__ <<  " key " << pretty_binary_string(iter->key()) << dendl;
+    iter->next();
+  }    
+  utime_t duration = ceph_clock_now(NULL) - start;
+  dout(0) << __func__ << dendl;
+  dout(0) << " num onodes: " << num_onodes << "\n" << \
+             " num_shards: " << num_shards << "\n" << \
+	     " num_super:  " << num_super << "\n" << \
+	     " num_coll: " << num_coll << "\n" << \
+	     " num_omap: " << num_omap << "\n" <<\
+	     " num_wal: " << num_wal << "\n" <<\
+	     " num_alloc: " << "\n" << \
+	     " num_stat: " << "\n" <<\
+	     " num_others: " << "\n" << dendl;
+  dout(0) << __func__ << " finished in" << duration << " seconds" << dendl;
+
+}
 // ===========================================
