@@ -8972,6 +8972,7 @@ void BlueStore::dump_kvdb()
   uint64_t num_alloc = 0;
   uint64_t num_stat = 0;
   uint64_t num_others = 0;
+  uint64_t num_shared_shards = 0;
 
   utime_t start = ceph_clock_now(NULL);
 
@@ -8986,8 +8987,12 @@ void BlueStore::dump_kvdb()
       num_stat++;
     else if (key.first == PREFIX_COLL)
       num_coll++;
-    else if (key.first == PREFIX_OBJ)
-      num_onodes++;
+    else if (key.first == PREFIX_OBJ) {
+      if (key.second.back() == ONODE_KEY_SUFFIX)
+	num_onodes++;
+      else
+	num_shards++;
+    }
     else if (key.first == PREFIX_OMAP)
       num_omap++;
     else if (key.first == PREFIX_WAL)
@@ -8995,7 +9000,7 @@ void BlueStore::dump_kvdb()
     else if (key.first == PREFIX_ALLOC || key.first == "b" )
       num_alloc++;
     else if (key.first == PREFIX_SHARED_BLOB)
-      num_shards++;
+      num_shared_shards++;
     else
       num_others++;
 
@@ -9011,9 +9016,10 @@ void BlueStore::dump_kvdb()
 	     " num_coll: " << num_coll << "\n" << \
 	     " num_omap: " << num_omap << "\n" <<\
 	     " num_wal: " << num_wal << "\n" <<\
-	     " num_alloc: " << "\n" << \
-	     " num_stat: " << "\n" <<\
-	     " num_others: " << "\n" << dendl;
+	     " num_alloc: " << num_alloc << "\n" << \
+	     " num_stat: " << num_stat <<"\n" <<\
+	     " num_shared_shards: " << num_shared_shards <<\
+	     " num_others: " << num_others << "\n" << dendl;
   dout(0) << __func__ << " finished in" << duration << " seconds" << dendl;
 
 }
