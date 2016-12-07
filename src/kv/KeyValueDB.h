@@ -192,6 +192,12 @@ public:
       }
     }
     virtual int status() = 0;
+    virtual size_t db_key_size() {
+      return 0;
+    }
+    virtual size_t db_value_size() {
+      return 0;
+    }
     virtual ~WholeSpaceIteratorImpl() { }
   };
   typedef ceph::shared_ptr< WholeSpaceIteratorImpl > WholeSpaceIterator;

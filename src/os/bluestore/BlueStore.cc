@@ -6169,6 +6169,7 @@ void BlueStore::get_db_statistics(Formatter *f)
 {
   db->get_statistics(f);
   dump_kvdb();
+  bluefs->dump_perf_stats(f);
 }
 
 BlueStore::TransContext *BlueStore::_txc_create(OpSequencer *osr)
@@ -6407,7 +6408,7 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
       extent_part = p.get_logical_offset() - onode_part - blob_part;
     }
 
-    dout(20) << "  onode " << o->oid << " is " << bl.length()
+    dout(0) << "  onode " << o->oid << " is " << bl.length()
 	     << " (" << onode_part << " bytes onode + "
 	     << blob_part << " bytes spanning blobs + "
 	     << extent_part << " bytes inline extents)"
@@ -8960,6 +8961,46 @@ int BlueStore::_split_collection(TransContext *txc,
   return r;
 }
 
+int get_key_slab(size_t sz)
+{
+  if (sz <= 64)
+    return 1;
+  else if (sz > 64 && sz <= 128)
+    return 2;
+  else if (sz > 128 && sz <= 192)
+    return 3;
+  else if (sz > 192 && sz <= 256)
+    return 4;
+  else
+    return 5;
+}
+
+int get_value_slab(size_t sz)
+{
+  if (sz <= 128)
+    return 1;
+  else if (sz > 128 && sz <= 256)
+    return 2;
+  else if (sz > 256 && sz <= 384)
+    return 3;
+  else if (sz > 384 && sz <= 512)
+    return 4;
+  else if (sz > 512 && sz <= 640)
+    return 5;
+  else if (sz > 640 && sz <= 768)
+    return 6;
+  else if (sz > 768 && sz <= 1024)
+    return 7;
+  else if (sz > 1024 && sz <= 2048)
+    return 8;
+  else if (sz > 2048 && sz <=  3072)
+    return 9;
+  else if (sz > 3072 && sz <= 4096)
+    return 10;
+  else
+    return 11;
+}
+
 void BlueStore::dump_kvdb()
 {
 
@@ -8973,6 +9014,13 @@ void BlueStore::dump_kvdb()
   uint64_t num_stat = 0;
   uint64_t num_others = 0;
   uint64_t num_shared_shards = 0;
+  //histogram
+  typedef map<int, uint64_t> value_map_t;
+  map<int, pair<uint64_t, value_map_t> > key_dist;
+  map<int, uint64_t> value_dist;
+  size_t max_key_size =0, max_value_size = 0;
+  size_t key_size = 0, value_size = 0;
+  int key_slab, value_slab;
 
   utime_t start = ceph_clock_now(NULL);
 
@@ -8980,7 +9028,20 @@ void BlueStore::dump_kvdb()
   iter->seek_to_first();
   dout(0) << __func__ << " iter valid: " << iter->valid() << dendl;
   while (iter->valid()) {
+    //Histogram stuff
+    key_size = iter->db_key_size();
+    value_size = iter->db_value_size();
+    key_slab = get_key_slab(key_size);
+    value_slab = get_value_slab(value_size);
+    key_dist[key_slab].first++;
+    key_dist[key_slab].second[value_slab]++;
+    value_dist[value_slab]++;
+    max_key_size = MAX(max_key_size, key_size);
+    max_value_size = MAX(max_value_size, value_size);
+
+
     pair<string,string> key(iter->raw_key());
+
     if (key.first == PREFIX_SUPER)
         num_super++;
     else if (key.first == PREFIX_STAT)
@@ -9010,16 +9071,29 @@ void BlueStore::dump_kvdb()
   }    
   utime_t duration = ceph_clock_now(NULL) - start;
   dout(0) << __func__ << dendl;
-  dout(0) << " num onodes: " << num_onodes << "\n" << \
+  dout(0) << "\n num onodes: " << num_onodes << "\n" << \
              " num_shards: " << num_shards << "\n" << \
 	     " num_super:  " << num_super << "\n" << \
-	     " num_coll: " << num_coll << "\n" << \
-	     " num_omap: " << num_omap << "\n" <<\
-	     " num_wal: " << num_wal << "\n" <<\
-	     " num_alloc: " << num_alloc << "\n" << \
-	     " num_stat: " << num_stat <<"\n" <<\
+	     " num_coll: "   << num_coll << "\n" << \
+	     " num_omap: "   << num_omap << "\n" <<\
+	     " num_wal: "    << num_wal << "\n" <<\
+	     " num_alloc: "  << num_alloc << "\n" << \
+	     " num_stat: "   << num_stat <<"\n" <<\
 	     " num_shared_shards: " << num_shared_shards <<\
 	     " num_others: " << num_others << "\n" << dendl;
+  dout(0) << "\n max_key_size: " << max_key_size << "\n" << \
+             " max_value_size: " << max_value_size << dendl;
+
+  for (auto i : value_dist) {
+    dout(0) << "\n value slab: " << i.first << " value count: " << i.second << dendl;
+  }
+
+  for (auto i : key_dist) {
+    dout(0) << " \n key slab: "<< i.first << " key count: " << i.second.first << dendl;
+    for ( auto j : i.second.second) {
+      dout(0) << " \n value slab in key: " << j.first << " value count in slab: " << j.second << dendl;
+    }
+  }
   dout(0) << __func__ << " finished in" << duration << " seconds" << dendl;
 
 }

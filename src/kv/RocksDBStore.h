@@ -150,6 +150,8 @@ public:
 
   void close();
 
+  void split(const std::string &s, char delim, std::vector<std::string> &elems);
+  std::vector<std::string> split(const std::string &s, char delim);
   void get_statistics(Formatter *f);
 
   struct  RocksWBHandler: public rocksdb::WriteBatch::Handler {
@@ -311,6 +313,8 @@ public:
     bufferlist value();
     bufferptr value_as_ptr();
     int status();
+    size_t db_key_size();
+    size_t db_value_size();
   };
 
   /// Utility
