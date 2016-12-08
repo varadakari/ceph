@@ -9064,14 +9064,6 @@ string get_value_slab_to_range(int slab)
   return ret;
 }
 
-struct key_slab
-{
-  uint8_t  slab_id;
-  uint64_t count;
-  uint32_t max_key_len;
-  uint32_t max_value_len;
-};
-
 void BlueStore::dump_kvdb(Formatter *f)
 {
 
@@ -9086,10 +9078,24 @@ void BlueStore::dump_kvdb(Formatter *f)
   uint64_t num_others = 0;
   uint64_t num_shared_shards = 0;
   //histogram
-  typedef map<int, uint64_t> value_map_t; // contains the value_slab and count
-  typedef map<int, uint64_t> key_map_t; // contains the key slab and count
-  map<string, pair<key_map_t, value_map_t> > key_dist;
-  map<int, uint64_t> value_dist;
+  struct value_dist
+  {
+    uint64_t count;
+    uint32_t max_len;
+  };
+  typedef struct value_dist value_dist_t;
+
+  struct key_dist
+  {
+    uint64_t count;
+    uint32_t max_len;
+    map<int, value_dist_t> val_map; // slab id to count and others
+  };
+  typedef struct key_dist key_dist_t;
+
+  typedef map<int, key_dist_t> key_map_t; // contains the key slab and count
+  map<string, key_map_t > key_hist;
+  map<int, uint64_t> value_hist;
   size_t max_key_size =0, max_value_size = 0;
   size_t key_size = 0, value_size = 0;
   int key_slab, value_slab;
@@ -9105,7 +9111,7 @@ void BlueStore::dump_kvdb(Formatter *f)
     value_size = iter->db_value_size();
     key_slab = get_key_slab(key_size);
     value_slab = get_value_slab(value_size);
-    value_dist[value_slab]++;
+    value_hist[value_slab]++;
     max_key_size = MAX(max_key_size, key_size);
     max_value_size = MAX(max_value_size, value_size);
 
@@ -9113,76 +9119,80 @@ void BlueStore::dump_kvdb(Formatter *f)
     pair<string,string> key(iter->raw_key());
 
     if (key.first == PREFIX_SUPER) {
-	key_dist[PREFIX_SUPER].first[key_slab]++;
-	key_dist[PREFIX_SUPER].second[value_slab]++;
+	key_hist[PREFIX_SUPER][key_slab].count++;
+	key_hist[PREFIX_SUPER][key_slab].max_len = MAX(key_size, key_hist[PREFIX_SUPER][key_slab].max_len);
+	key_hist[PREFIX_SUPER][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_SUPER][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_SUPER][key_slab].val_map[value_slab].max_len);
         num_super++;
     }
     else if (key.first == PREFIX_STAT) {
-	key_dist[PREFIX_STAT].first[key_slab]++;
-	key_dist[PREFIX_STAT].second[value_slab]++;
+	key_hist[PREFIX_STAT][key_slab].count++;
+	key_hist[PREFIX_STAT][key_slab].max_len = MAX(key_size, key_hist[PREFIX_STAT][key_slab].max_len);
+	key_hist[PREFIX_STAT][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_STAT][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_STAT][key_slab].val_map[value_slab].max_len);
         num_stat++;
     }
     else if (key.first == PREFIX_COLL) {
-	key_dist[PREFIX_COLL].first[key_slab]++;
-	key_dist[PREFIX_COLL].second[value_slab]++;
+	key_hist[PREFIX_COLL][key_slab].count++;
+	key_hist[PREFIX_COLL][key_slab].max_len = MAX(key_size, key_hist[PREFIX_COLL][key_slab].max_len);
+	key_hist[PREFIX_COLL][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_COLL][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_COLL][key_slab].val_map[value_slab].max_len);
         num_coll++;
     }
     else if (key.first == PREFIX_OBJ) {
       if (key.second.back() == ONODE_KEY_SUFFIX) {
-	key_dist["o"].first[key_slab]++;
-	key_dist["o"].second[value_slab]++;
+	key_hist["o"][key_slab].count++;
+	key_hist["o"][key_slab].max_len = MAX(key_size, key_hist["o"][key_slab].max_len);
+	key_hist["o"][key_slab].val_map[value_slab].count++;
+	key_hist["o"][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist["o"][key_slab].val_map[value_slab].max_len);
 	num_onodes++;
       }
       else {
-	key_dist["x"].first[key_slab]++;
-	key_dist["x"].second[value_slab]++;
+	key_hist["x"][key_slab].count++;
+	key_hist["x"][key_slab].max_len = MAX(key_size, key_hist["x"][key_slab].max_len);
+	key_hist["x"][key_slab].val_map[value_slab].count++;
+	key_hist["x"][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist["x"][key_slab].val_map[value_slab].max_len);
 	num_shards++;
       }
     }
     else if (key.first == PREFIX_OMAP) {
-	key_dist[PREFIX_OMAP].first[key_slab]++;
-	key_dist[PREFIX_OMAP].second[value_slab]++;
+	key_hist[PREFIX_OMAP][key_slab].count++;
+	key_hist[PREFIX_OMAP][key_slab].max_len = MAX(key_size, key_hist[PREFIX_OMAP][key_slab].max_len);
+	key_hist[PREFIX_OMAP][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_OMAP][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_OMAP][key_slab].val_map[value_slab].max_len);
         num_omap++;
     }
     else if (key.first == PREFIX_WAL) {
-	key_dist[PREFIX_WAL].first[key_slab]++;
-	key_dist[PREFIX_WAL].second[value_slab]++;
+	key_hist[PREFIX_WAL][key_slab].count++;
+	key_hist[PREFIX_WAL][key_slab].max_len = MAX(key_size, key_hist[PREFIX_WAL][key_slab].max_len);
+	key_hist[PREFIX_WAL][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_WAL][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_WAL][key_slab].val_map[value_slab].max_len);
         num_wal++;
     }
     else if (key.first == PREFIX_ALLOC || key.first == "b" ) {
-	key_dist[PREFIX_ALLOC].first[key_slab]++;
-	key_dist[PREFIX_ALLOC].second[value_slab]++;
+	key_hist[PREFIX_ALLOC][key_slab].count++;
+	key_hist[PREFIX_ALLOC][key_slab].max_len = MAX(key_size, key_hist[PREFIX_ALLOC][key_slab].max_len);
+	key_hist[PREFIX_ALLOC][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_ALLOC][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_ALLOC][key_slab].val_map[value_slab].max_len);
         num_alloc++;
     }
     else if (key.first == PREFIX_SHARED_BLOB) {
-	key_dist[PREFIX_SHARED_BLOB].first[key_slab]++;
-	key_dist[PREFIX_SHARED_BLOB].second[value_slab]++;
+	key_hist[PREFIX_SHARED_BLOB][key_slab].count++;
+	key_hist[PREFIX_SHARED_BLOB][key_slab].max_len = MAX(key_size, key_hist[PREFIX_SHARED_BLOB][key_slab].max_len);
+	key_hist[PREFIX_SHARED_BLOB][key_slab].val_map[value_slab].count++;
+	key_hist[PREFIX_SHARED_BLOB][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist[PREFIX_SHARED_BLOB][key_slab].val_map[value_slab].max_len);
         num_shared_shards++;
     }
     else {
-	key_dist["Z"].first[key_slab]++;
-	key_dist["Z"].second[value_slab]++;
+	key_hist["Z"][key_slab].count++;
+	key_hist["Z"][key_slab].max_len = MAX(key_size, key_hist["Z"][key_slab].max_len);
+	key_hist["Z"][key_slab].val_map[value_slab].count++;
+	key_hist["Z"][key_slab].val_map[value_slab].max_len = MAX(value_size, key_hist["Z"][key_slab].val_map[value_slab].max_len);
         num_others++;
     }
-
-    //dout(0) << __func__  << key.first << " / " << key.second << dendl;
-    //dout(0) << __func__ <<  " key " << pretty_binary_string(iter->key()) << dendl;
     iter->next();
   }    
   utime_t duration = ceph_clock_now(NULL) - start;
-  dout(0) << __func__ << dendl;
-  dout(0) << "\n num onodes: " << num_onodes << "\n" << \
-             " num_shards: " << num_shards << "\n" << \
-	     " num_super:  " << num_super << "\n" << \
-	     " num_coll: "   << num_coll << "\n" << \
-	     " num_omap: "   << num_omap << "\n" <<\
-	     " num_wal: "    << num_wal << "\n" <<\
-	     " num_alloc: "  << num_alloc << "\n" << \
-	     " num_stat: "   << num_stat <<"\n" <<\
-	     " num_shared_shards: " << num_shared_shards <<\
-	     " num_others: " << num_others << "\n" << dendl;
-  dout(0) << "\n max_key_size: " << max_key_size << "\n" << \
-             " max_value_size: " << max_value_size << dendl;
   f->open_object_section("rocksdb key-value stats");
   f->dump_unsigned("num_onodes", num_onodes);
   f->dump_unsigned("num_shards", num_shards);
@@ -9199,29 +9209,27 @@ void BlueStore::dump_kvdb(Formatter *f)
   f->close_section();
 
   f->open_object_section("rocksdb value distribution");
-  for (auto i : value_dist) {
-    dout(0) << "\n value slab: " << i.first << " value count: " << i.second << dendl;
+  for (auto i : value_hist) {
     f->dump_unsigned(get_value_slab_to_range(i.first).data(), i.second);
   }
   f->close_section();
 
   f->open_object_section("rocksdb key-value histogram");
-  for (auto i : key_dist) {
-    dout(0) << " \n key prefix: "<< i.first << dendl; 
+  for (auto i : key_hist) {
     f->dump_string("prefix", i.first);
-    f->dump_string("key-distribution","----");
-    for ( auto k : i.second.first) {
-      dout(0) << " \n key slab in key: " << get_key_slab_to_range(k.first) << " key count in slab: " << k.second << dendl;
-      f->dump_unsigned(get_key_slab_to_range(k.first).data(), k.second);
-    }
-    f->dump_string("value-distribution","----");
-    for ( auto j : i.second.second) {
-      dout(0) << " \n value slab in key: " << get_value_slab_to_range(j.first) << " value count in slab: " << j.second << dendl;
-      f->dump_unsigned(get_value_slab_to_range(j.first).data(), j.second);
+    f->dump_string("key-distribution","+");
+    for ( auto k : i.second) {
+      f->dump_unsigned(get_key_slab_to_range(k.first).data(), k.second.count);
+      f->dump_unsigned("max_len", k.second.max_len);
+      f->dump_string("value-distribution","*");
+      for ( auto j : k.second.val_map) {
+	f->dump_unsigned(get_value_slab_to_range(j.first).data(), j.second.count);
+	f->dump_unsigned("max_len", j.second.max_len);
+      }
     }
   }
   f->close_section();
-  dout(0) << __func__ << " finished in" << duration << " seconds" << dendl;
+  dout(0) << __func__ << " finished in " << duration << " seconds" << dendl;
 
 }
 // ===========================================
