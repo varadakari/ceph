@@ -1754,7 +1754,7 @@ public:
   }
 
   void get_db_statistics(Formatter *f);
-  void dump_kvdb();
+  void dump_kvdb(Formatter *f);
 
 public:
   int statfs(struct store_statfs_t *buf) override;

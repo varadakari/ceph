@@ -6168,7 +6168,7 @@ uint64_t BlueStore::_assign_blobid(TransContext *txc)
 void BlueStore::get_db_statistics(Formatter *f)
 {
   db->get_statistics(f);
-  dump_kvdb();
+  dump_kvdb(f);
   bluefs->dump_perf_stats(f);
 }
 
@@ -8974,6 +8974,28 @@ int get_key_slab(size_t sz)
   else
     return 5;
 }
+string get_key_slab_to_range(int slab)
+{
+  string ret;
+  switch(slab) {
+    case 1:
+      ret = "[0, 64]";
+      break;
+    case 2:
+      ret = "(64, 128]";
+      break;
+    case 3:
+      ret = "(128, 192]";
+      break;
+    case 4:
+      ret = "(192, 256]";
+      break;
+    case 5:
+      ret = "> 256";
+      break;
+  }
+  return ret;
+}
 
 int get_value_slab(size_t sz)
 {
@@ -9001,7 +9023,56 @@ int get_value_slab(size_t sz)
     return 11;
 }
 
-void BlueStore::dump_kvdb()
+string get_value_slab_to_range(int slab)
+{
+  string ret;
+  switch(slab) {
+    case 1:
+      ret = "[0, 128]";
+      break;
+    case 2:
+      ret = "(128, 256]";
+      break;
+    case 3:
+      ret = "(256, 384]";
+      break;
+    case 4:
+      ret = "(384, 512]";
+      break;
+    case 5:
+      ret = "(512, 640]";
+      break;
+    case 6:
+      ret = "(640, 768]";
+      break;
+    case 7:
+      ret = "(768, 1024]";
+      break;
+    case 8:
+      ret = "(1024, 2048]";
+      break;
+    case 9:
+      ret = "(2048, 3072]";
+      break;
+    case 10:
+      ret = "(3072, 4096]";
+      break;
+    case 11:
+      ret = ">4k";
+      break;
+  }
+  return ret;
+}
+
+struct key_slab
+{
+  uint8_t  slab_id;
+  uint64_t count;
+  uint32_t max_key_len;
+  uint32_t max_value_len;
+};
+
+void BlueStore::dump_kvdb(Formatter *f)
 {
 
   uint64_t num_onodes = 0;
@@ -9015,8 +9086,9 @@ void BlueStore::dump_kvdb()
   uint64_t num_others = 0;
   uint64_t num_shared_shards = 0;
   //histogram
-  typedef map<int, uint64_t> value_map_t;
-  map<int, pair<uint64_t, value_map_t> > key_dist;
+  typedef map<int, uint64_t> value_map_t; // contains the value_slab and count
+  typedef map<int, uint64_t> key_map_t; // contains the key slab and count
+  map<string, pair<key_map_t, value_map_t> > key_dist;
   map<int, uint64_t> value_dist;
   size_t max_key_size =0, max_value_size = 0;
   size_t key_size = 0, value_size = 0;
@@ -9033,8 +9105,6 @@ void BlueStore::dump_kvdb()
     value_size = iter->db_value_size();
     key_slab = get_key_slab(key_size);
     value_slab = get_value_slab(value_size);
-    key_dist[key_slab].first++;
-    key_dist[key_slab].second[value_slab]++;
     value_dist[value_slab]++;
     max_key_size = MAX(max_key_size, key_size);
     max_value_size = MAX(max_value_size, value_size);
@@ -9042,28 +9112,58 @@ void BlueStore::dump_kvdb()
 
     pair<string,string> key(iter->raw_key());
 
-    if (key.first == PREFIX_SUPER)
+    if (key.first == PREFIX_SUPER) {
+	key_dist[PREFIX_SUPER].first[key_slab]++;
+	key_dist[PREFIX_SUPER].second[value_slab]++;
         num_super++;
-    else if (key.first == PREFIX_STAT)
-      num_stat++;
-    else if (key.first == PREFIX_COLL)
-      num_coll++;
-    else if (key.first == PREFIX_OBJ) {
-      if (key.second.back() == ONODE_KEY_SUFFIX)
-	num_onodes++;
-      else
-	num_shards++;
     }
-    else if (key.first == PREFIX_OMAP)
-      num_omap++;
-    else if (key.first == PREFIX_WAL)
-      num_wal++;
-    else if (key.first == PREFIX_ALLOC || key.first == "b" )
-      num_alloc++;
-    else if (key.first == PREFIX_SHARED_BLOB)
-      num_shared_shards++;
-    else
-      num_others++;
+    else if (key.first == PREFIX_STAT) {
+	key_dist[PREFIX_STAT].first[key_slab]++;
+	key_dist[PREFIX_STAT].second[value_slab]++;
+        num_stat++;
+    }
+    else if (key.first == PREFIX_COLL) {
+	key_dist[PREFIX_COLL].first[key_slab]++;
+	key_dist[PREFIX_COLL].second[value_slab]++;
+        num_coll++;
+    }
+    else if (key.first == PREFIX_OBJ) {
+      if (key.second.back() == ONODE_KEY_SUFFIX) {
+	key_dist["o"].first[key_slab]++;
+	key_dist["o"].second[value_slab]++;
+	num_onodes++;
+      }
+      else {
+	key_dist["x"].first[key_slab]++;
+	key_dist["x"].second[value_slab]++;
+	num_shards++;
+      }
+    }
+    else if (key.first == PREFIX_OMAP) {
+	key_dist[PREFIX_OMAP].first[key_slab]++;
+	key_dist[PREFIX_OMAP].second[value_slab]++;
+        num_omap++;
+    }
+    else if (key.first == PREFIX_WAL) {
+	key_dist[PREFIX_WAL].first[key_slab]++;
+	key_dist[PREFIX_WAL].second[value_slab]++;
+        num_wal++;
+    }
+    else if (key.first == PREFIX_ALLOC || key.first == "b" ) {
+	key_dist[PREFIX_ALLOC].first[key_slab]++;
+	key_dist[PREFIX_ALLOC].second[value_slab]++;
+        num_alloc++;
+    }
+    else if (key.first == PREFIX_SHARED_BLOB) {
+	key_dist[PREFIX_SHARED_BLOB].first[key_slab]++;
+	key_dist[PREFIX_SHARED_BLOB].second[value_slab]++;
+        num_shared_shards++;
+    }
+    else {
+	key_dist["Z"].first[key_slab]++;
+	key_dist["Z"].second[value_slab]++;
+        num_others++;
+    }
 
     //dout(0) << __func__  << key.first << " / " << key.second << dendl;
     //dout(0) << __func__ <<  " key " << pretty_binary_string(iter->key()) << dendl;
@@ -9083,17 +9183,44 @@ void BlueStore::dump_kvdb()
 	     " num_others: " << num_others << "\n" << dendl;
   dout(0) << "\n max_key_size: " << max_key_size << "\n" << \
              " max_value_size: " << max_value_size << dendl;
+  f->open_object_section("rocksdb key-value stats");
+  f->dump_unsigned("num_onodes", num_onodes);
+  f->dump_unsigned("num_shards", num_shards);
+  f->dump_unsigned("num_super", num_super);
+  f->dump_unsigned("num_coll", num_coll);
+  f->dump_unsigned("num_omap", num_omap);
+  f->dump_unsigned("num_wal", num_wal);
+  f->dump_unsigned("num_alloc", num_alloc);
+  f->dump_unsigned("num_stat", num_stat);
+  f->dump_unsigned("num_shared_shards", num_shared_shards);
+  f->dump_unsigned("num_others", num_others);
+  f->dump_unsigned("max_key_size", max_key_size);
+  f->dump_unsigned("max_value_size", max_value_size);
+  f->close_section();
 
+  f->open_object_section("rocksdb value distribution");
   for (auto i : value_dist) {
     dout(0) << "\n value slab: " << i.first << " value count: " << i.second << dendl;
+    f->dump_unsigned(get_value_slab_to_range(i.first).data(), i.second);
   }
+  f->close_section();
 
+  f->open_object_section("rocksdb key-value histogram");
   for (auto i : key_dist) {
-    dout(0) << " \n key slab: "<< i.first << " key count: " << i.second.first << dendl;
+    dout(0) << " \n key prefix: "<< i.first << dendl; 
+    f->dump_string("prefix", i.first);
+    f->dump_string("key-distribution","----");
+    for ( auto k : i.second.first) {
+      dout(0) << " \n key slab in key: " << get_key_slab_to_range(k.first) << " key count in slab: " << k.second << dendl;
+      f->dump_unsigned(get_key_slab_to_range(k.first).data(), k.second);
+    }
+    f->dump_string("value-distribution","----");
     for ( auto j : i.second.second) {
-      dout(0) << " \n value slab in key: " << j.first << " value count in slab: " << j.second << dendl;
+      dout(0) << " \n value slab in key: " << get_value_slab_to_range(j.first) << " value count in slab: " << j.second << dendl;
+      f->dump_unsigned(get_value_slab_to_range(j.first).data(), j.second);
     }
   }
+  f->close_section();
   dout(0) << __func__ << " finished in" << duration << " seconds" << dendl;
 
 }
