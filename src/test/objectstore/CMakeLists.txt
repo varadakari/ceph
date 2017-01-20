@@ -129,6 +129,16 @@ if(HAVE_LIBAIO)
     )
   add_ceph_unittest(unittest_bluefs ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_bluefs)
   target_link_libraries(unittest_bluefs os global)
+  # unittest_dbstress
+  add_executable(unittest_dbstress
+    db_stress.cc
+    )
+  set(UNITTEST_CXX_FLAGS "${UNITTEST_CXX_FLAGS} -I${CMAKE_SOURCE_DIR}/src/rocksdb/ -DROCKSDB_PLATFORM_POSIX -DSNAPPY" )
+  add_definitions("-DROCKSDB_PLATFORM_POSIX -DSNAPPY")
+  set_target_properties(unittest_dbstress PROPERTIES COMPILE_FLAGS ${UNITTEST_CXX_FLAGS})
+  add_ceph_unittest(unittest_dbstress ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/unittest_dbstress)
+  #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${DPDK_INCLUDE_DIR}")
+  target_link_libraries(unittest_dbstress kv os ceph-common global gflags snappy)
 
   # unittest_bluestore_types
   add_executable(unittest_bluestore_types

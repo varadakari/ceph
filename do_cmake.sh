@@ -6,7 +6,7 @@ if test -e build; then
 fi
 mkdir build
 cd build
-cmake -DBOOST_J=$(nproc) "$@" ..
+cmake -DBOOST_J=$(nproc) -DCOMPRESSION=snappy "$@" ..
 
 # minimal config to find plugins
 cat <<EOF > ceph.conf
