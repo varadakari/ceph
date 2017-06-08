@@ -5,7 +5,7 @@
  * Author: Ramesh Chander, Ramesh.Chander@sandisk.com
  */
 #include <iostream>
-#include <boost/scoped_ptr.hpp>
+//#include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
 
 #include "common/Mutex.h"
@@ -15,14 +15,16 @@
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
 #include "os/bluestore/BitAllocator.h"
+#include <thread>
+using namespace std;
 
 
 #if GTEST_HAS_PARAM_TEST
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
 public:
-    boost::scoped_ptr<Allocator> alloc;
-    AllocTest(): alloc(0) { }
+    std::shared_ptr<Allocator> alloc;
+    AllocTest(): alloc(nullptr) { }
     void init_alloc(int64_t size, uint64_t min_alloc_size) {
       std::cout << "Creating alloc type " << string(GetParam()) << " \n";
       alloc.reset(Allocator::create(g_ceph_context, string(GetParam()), size,
@@ -30,7 +32,7 @@ public:
     }
 
     void init_close() {
-      alloc.reset(0);
+      alloc.reset();
     }
 };
 
@@ -53,6 +55,7 @@ TEST_P(AllocTest, test_alloc_min_alloc)
 {
   int64_t block_size = 1024;
   int64_t blocks = BitMapZone::get_total_blocks() * 2 * block_size;
+  std::cout << __func__ << " blocks: " << blocks << std::endl;
 
   {
     init_alloc(blocks, block_size);
@@ -169,6 +172,7 @@ TEST_P(AllocTest, test_alloc_min_max_alloc)
     EXPECT_EQ(extents.size(), 8u);
     for (auto& e : extents) {
       EXPECT_EQ(e.length, 2 * block_size);
+      alloc->release(e.offset, e.length);
     }
   }
 }
@@ -290,11 +294,110 @@ TEST_P(AllocTest, test_alloc_non_aligned_len)
   EXPECT_EQ(want_size, alloc->allocate(want_size, alloc_unit, 0, &extents));
 }
 
+#define NUM_ALLOCATORS 4
+#define NUM_SCAVENGERS 1
+
+vector<AllocExtentVector> allocs[NUM_ALLOCATORS];
+int64_t block_size = 4096;
+bool stop = false;
+std::mutex v_lock;
+
+void do_join(std::thread& t)
+{
+    t.join();
+}
+
+void join_all(std::vector<std::thread>& v)
+{
+    std::for_each(v.begin(),v.end(),do_join);
+}
+
+void allocate_space(int index, std::shared_ptr<Allocator> alloc)
+{
+//going to allocate space based on index
+    AllocExtentVector extents;
+    while(1) {
+
+	    //std::cout << "Allocating at index: " << index << std::endl;
+	    extents.clear();
+	    size_t size = (index+1) * block_size;
+  	    alloc->reserve(size);
+	    alloc->allocate(size,
+			    (uint64_t) block_size,
+			    (uint64_t) block_size,
+			    (int64_t) 0,
+			    &extents);
+	   if (extents.size() == 0) {
+	      std::cout << " Allocation failed for index: " << index << " waiting..." << std::endl;
+	      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+	   } else {
+	    for (auto& e : extents) {
+		assert(!(e.offset%block_size));
+	    }
+           }
+	   {
+		std::unique_lock<std::mutex> l(v_lock);
+	   	allocs[index].push_back(extents);
+	   }
+	   if (stop) break;
+   }
+
+}
+
+void release_space(std::shared_ptr<Allocator> alloc)
+{
+//going to allocate space based on index
+    AllocExtentVector extents;
+    while(1) {
+	for (int i = 0; i < NUM_ALLOCATORS; i++) {
+	   //std::cout << "Freeing at index: " << i << std::endl;
+	   {
+		std::unique_lock<std::mutex> l(v_lock);
+	   	extents = allocs[i].front();
+	   }
+	   for (auto& e : extents) {
+	      alloc->release(e.offset, e.length);
+	   }
+	   extents.clear();
+	   {
+		std::unique_lock<std::mutex> l(v_lock);
+	   	allocs[i].erase(allocs[i].begin());
+           }
+	}
+	if (stop) break;
+   }
+
+}
+
+TEST_P(AllocTest, test_concurrent)
+{
+  uint64_t size = 1*1024*1024*1024*1024ULL; 
+  std::cout << __func__ << " size: " << size << std::endl;
+  init_alloc(size, block_size);
+  alloc->init_add_free(0, size);
+  EXPECT_EQ(alloc->reserve(size), 0);
+  {
+    std::vector<std::thread> allocator_threads;
+    for (int i=0; i<NUM_ALLOCATORS; i++) {
+      allocator_threads.push_back(std::thread(allocate_space, i, std::ref(alloc)));
+    }
+
+    std::vector<std::thread> release_threads;
+    for (int i=0; i<NUM_SCAVENGERS; i++) {
+      release_threads.push_back(std::thread(release_space, std::ref(alloc) ));
+    }
+    sleep(30);
+    stop = true;
+
+    join_all(allocator_threads);
+    join_all(release_threads);
+  }
+}
 
 INSTANTIATE_TEST_CASE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("stupid", "bitmap"));
+  ::testing::Values("bitmap"));
 
 #else
 
