@@ -316,6 +316,7 @@ void allocate_space(int index, std::shared_ptr<Allocator> alloc)
 {
 //going to allocate space based on index
     AllocExtentVector extents;
+    int failures = 0;
     while(1) {
 
 	    //std::cout << "Allocating at index: " << index << std::endl;
@@ -329,6 +330,7 @@ void allocate_space(int index, std::shared_ptr<Allocator> alloc)
 			    &extents);
 	   if (extents.size() == 0) {
 	      std::cout << " Allocation failed for index: " << index << " waiting..." << std::endl;
+	      failures++;
 	      std::this_thread::sleep_for(std::chrono::milliseconds(4));
 	   } else {
 	    for (auto& e : extents) {
@@ -339,6 +341,7 @@ void allocate_space(int index, std::shared_ptr<Allocator> alloc)
 		std::unique_lock<std::mutex> l(v_lock);
 	   	allocs[index].push_back(extents);
 	   }
+	   if (failures == 5) break;
 	   if (stop) break;
    }
 
@@ -348,21 +351,31 @@ void release_space(std::shared_ptr<Allocator> alloc)
 {
 //going to allocate space based on index
     AllocExtentVector extents;
+    int iters = NUM_ALLOCATORS;
     while(1) {
-	for (int i = 0; i < NUM_ALLOCATORS; i++) {
+	for (int i = 0; i < iters; i++) {
 	   //std::cout << "Freeing at index: " << i << std::endl;
 	   {
 		std::unique_lock<std::mutex> l(v_lock);
 	   	extents = allocs[i].front();
 	   }
-	   for (auto& e : extents) {
-	      alloc->release(e.offset, e.length);
+	   if (extents.size() > 0) {
+		for (auto& e : extents) {
+			alloc->release(e.offset, e.length);
+		}
+		extents.clear();
+		{
+			std::unique_lock<std::mutex> l(v_lock);
+			allocs[i].erase(allocs[i].begin());
+		}
+	   } else {
+		   //remove from alloc vector
+		   //have to adjust the num allocatos in that case dynamically
+		   std::unique_lock<std::mutex> l(v_lock);
+		   iters--;
+		   allocs.erase(allocs.begin() + i);
 	   }
-	   extents.clear();
-	   {
-		std::unique_lock<std::mutex> l(v_lock);
-	   	allocs[i].erase(allocs[i].begin());
-           }
+
 	}
 	if (stop) break;
    }
@@ -386,7 +399,7 @@ TEST_P(AllocTest, test_concurrent)
     for (int i=0; i<NUM_SCAVENGERS; i++) {
       release_threads.push_back(std::thread(release_space, std::ref(alloc) ));
     }
-    sleep(30);
+    sleep(300);
     stop = true;
 
     join_all(allocator_threads);
@@ -397,7 +410,7 @@ TEST_P(AllocTest, test_concurrent)
 INSTANTIATE_TEST_CASE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("bitmap"));
+  ::testing::Values("stupid", "bitmap"));
 
 #else
 
